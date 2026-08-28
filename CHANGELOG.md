@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Carto API key support** on `:carto_light`, `:carto_dark`, and
+  `:carto_voyager`, which Carto now requires. Configure a default with
+  `config :rover, Rover.Tiles, carto_api_key: "..."`, or pass
+  `tiles={{:carto_dark, key: "..."}}` per call to override it. Presets
+  without a key configured or passed are unaffected. Carto is retiring these
+  raster endpoints for vector tiles; Rover's basemap layer stays raster-only
+  for now.
+
 ## [0.5.0] - 2026-08-31
 
 ### Added
@@ -78,7 +90,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A `Rover.Shape` fallback clause that could not be reached — every caller of the
   private `get/2` is already inside an `is_map/1` guard. Dialyzer's first find.
-
 ## [0.4.0] - 2026-08-12
 
 ### Added
@@ -398,6 +409,7 @@ them.
   back as strings and will not match.
 - `fit` governs *re*fitting; the initial framing is separate.
 
+[Unreleased]: https://github.com/nseaSeb/rover/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/nseaSeb/rover/releases/tag/v0.5.0
 [0.4.0]: https://github.com/nseaSeb/rover/releases/tag/v0.4.0
 [0.3.2]: https://github.com/nseaSeb/rover/releases/tag/v0.3.2
