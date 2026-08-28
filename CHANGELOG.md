@@ -8,13 +8,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Vector basemaps**: `:carto_light_vector`, `:carto_dark_vector`, and
+  `:carto_voyager_vector`, rendered through `ol-mapbox-style` as native
+  OpenLayers vector tile layers alongside the existing raster presets, which
+  keep working unchanged. A generic `{:vector, style_url}` /
+  `{:vector, style_url, opts}` hatch, symmetric with the existing `{:xyz,
+  ...}` one, covers any other MapLibre-compatible style — Mapbox, MapTiler,
+  or self-hosted. `carto_api_key` config and the per-call `key:` opt apply to
+  the three vector presets exactly as they already do to their raster
+  counterparts.
 - **Carto API key support** on `:carto_light`, `:carto_dark`, and
   `:carto_voyager`, which Carto now requires. Configure a default with
   `config :rover, Rover.Tiles, carto_api_key: "..."`, or pass
   `tiles={{:carto_dark, key: "..."}}` per call to override it. Presets
-  without a key configured or passed are unaffected. Carto is retiring these
-  raster endpoints for vector tiles; Rover's basemap layer stays raster-only
-  for now.
+  without a key configured or passed are unaffected.
 
 ## [0.4.0] - 2026-08-12
 

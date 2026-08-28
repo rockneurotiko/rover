@@ -355,12 +355,22 @@ than quietly drawing your marker in the middle of the Pacific.
 
 ```heex
 <.map id="m" tiles={:carto_dark} ... />
+<.map id="m" tiles={:carto_dark_vector} ... />
 <.map id="m" tiles={{:xyz, "https://tiles.example.com/{z}/{x}/{y}.png", attributions: "© Example"}} ... />
+<.map id="m" tiles={{:vector, "https://api.maptiler.com/maps/streets/style.json?key=YOUR_KEY"}} ... />
 <.map id="m" tiles={:none} ... />
 ```
 
-Presets: `:osm`, `:osm_hot`, `:carto_light`, `:carto_dark`, `:carto_voyager`,
-`:opentopomap`, `:esri_world_imagery`, `:ign_plan`, `:ign_ortho`.
+Raster presets: `:osm`, `:osm_hot`, `:carto_light`, `:carto_dark`,
+`:carto_voyager`, `:opentopomap`, `:esri_world_imagery`, `:ign_plan`,
+`:ign_ortho`. Vector presets: `:carto_light_vector`, `:carto_dark_vector`,
+`:carto_voyager_vector`.
+
+Vector tiles are sharper at any zoom or pixel density and stay on a fresher
+data cadence than their raster counterparts — see
+[Carto's basemaps FAQ](https://docs.carto.com/faqs/carto-basemaps) for the full
+comparison. New code should reach for a vector preset; the raster ones keep
+working exactly as they do today for anything already built on them.
 
 The two IGN presets serve the French [Géoportail](https://www.geoportail.gouv.fr/)
 — the reference plan and the aerial orthophotography. Unlike the demo endpoints
@@ -368,11 +378,11 @@ below they are meant for production use.
 
 Each one carries the attribution its provider requires, and Rover renders it.
 The OSM and Carto presets point at **public demo servers with usage policies
-that forbid production traffic** — for anything real, point `{:xyz, …}` at tiles
-you are entitled to use.
+that forbid production traffic** — for anything real, point `{:xyz, …}` (or,
+for a vector style, `{:vector, …}`) at tiles you are entitled to use.
 
-Carto now requires an API key on `:carto_light`, `:carto_dark`, and
-`:carto_voyager`:
+Carto now requires an API key on all six of its presets, raster and vector
+alike:
 
 ```elixir
 # config.exs — applies to every carto_* preset
@@ -382,11 +392,8 @@ config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
 ```heex
 <%!-- or per call, which overrides the configured default --%>
 <.map id="m" tiles={{:carto_dark, key: "YOUR_KEY"}} ... />
+<.map id="m" tiles={{:carto_dark_vector, key: "YOUR_KEY"}} ... />
 ```
-
-Carto is also retiring these raster endpoints for vector tiles; Rover's
-OpenLayers basemap layer is raster-only today, so treat the Carto presets as a
-transitional option rather than a long-term one.
 
 ## What "only update what changed" actually means
 
