@@ -371,6 +371,23 @@ The OSM and Carto presets point at **public demo servers with usage policies
 that forbid production traffic** — for anything real, point `{:xyz, …}` at tiles
 you are entitled to use.
 
+Carto now requires an API key on `:carto_light`, `:carto_dark`, and
+`:carto_voyager`:
+
+```elixir
+# config.exs — applies to every carto_* preset
+config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
+```
+
+```heex
+<%!-- or per call, which overrides the configured default --%>
+<.map id="m" tiles={{:carto_dark, key: "YOUR_KEY"}} ... />
+```
+
+Carto is also retiring these raster endpoints for vector tiles; Rover's
+OpenLayers basemap layer is raster-only today, so treat the Carto presets as a
+transitional option rather than a long-term one.
+
 ## What "only update what changed" actually means
 
 The map is rendered as three attributes: `data-rover` (the view),
