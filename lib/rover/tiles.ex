@@ -15,6 +15,25 @@ defmodule Rover.Tiles do
   that forbid heavy traffic; for anything beyond development, point `{:xyz, …}`
   at tiles you are entitled to use.
 
+  ## Carto API keys
+
+  Carto now requires an API key on `:carto_light`, `:carto_dark`, and
+  `:carto_voyager`, requests without one are rejected. Configure a default for
+  the whole app:
+
+      config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
+
+  or pass one per call, which overrides the configured default:
+
+      <.map id="m" tiles={{:carto_dark, key: "YOUR_KEY"}} ... />
+
+  Carto is also retiring these raster tile endpoints in favor of vector tiles
+  (MapLibre-style GL JSON served as MVT). Rover's map renders basemaps through
+  OpenLayers' raster `XYZ` source today, so the presets here stay on raster
+  until Rover grows a vector tile layer — track Carto's deprecation notices if
+  you depend on `:carto_light`, `:carto_dark`, or `:carto_voyager` past their
+  raster sunset date.
+
   ## France
 
   `:ign_plan` and `:ign_ortho` serve the French Géoportail — the reference plan
@@ -103,7 +122,14 @@ defmodule Rover.Tiles do
           | :ign_plan
           | :ign_ortho
 
-  @type t :: preset() | :none | {:xyz, String.t()} | {:xyz, String.t(), keyword()}
+  @type t ::
+          preset()
+          | {preset(), keyword()}
+          | :none
+          | {:xyz, String.t()}
+          | {:xyz, String.t(), keyword()}
+
+  @carto_presets [:carto_light, :carto_dark, :carto_voyager]
 
   @doc """
   The list of available preset names.
@@ -137,10 +163,13 @@ defmodule Rover.Tiles do
   def resolve!(:none), do: nil
   def resolve!(nil), do: nil
 
-  def resolve!(name) when is_atom(name) do
+  def resolve!(name) when is_atom(name), do: resolve!({name, []})
+
+  def resolve!({name, opts}) when is_atom(name) and is_list(opts) do
     case Map.fetch(@presets, name) do
       {:ok, tiles} ->
-        tiles
+        key = Keyword.get(opts, :key, default_key(name))
+        apply_key(tiles, key)
 
       :error ->
         raise ArgumentError, """
@@ -169,7 +198,23 @@ defmodule Rover.Tiles do
     invalid tiles: #{inspect(other)}.
 
     Expected a preset name (#{Enum.map_join(presets(), ", ", &inspect/1)}), `:none`,
-    or `{:xyz, url}` / `{:xyz, url, opts}`.
+    `{preset, opts}`, or `{:xyz, url}` / `{:xyz, url, opts}`.
     """
+  end
+
+  # Only the Carto presets have a configured default — every other preset's
+  # `key` stays nil unless a caller passes one explicitly, so pointing this at
+  # an unkeyed provider is a no-op rather than a broken URL.
+  defp default_key(name) when name in @carto_presets do
+    :rover |> Application.get_env(__MODULE__, []) |> Keyword.get(:carto_api_key)
+  end
+
+  defp default_key(_name), do: nil
+
+  defp apply_key(tiles, nil), do: tiles
+
+  defp apply_key(tiles, key) when is_binary(key) do
+    separator = if String.contains?(tiles.url, "?"), do: "&", else: "?"
+    %{tiles | url: tiles.url <> separator <> "key=" <> URI.encode_www_form(key)}
   end
 end
