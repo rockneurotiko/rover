@@ -587,6 +587,23 @@ function add(coordinate, delta) {
   coordinate[1] += +delta[1];
   return coordinate;
 }
+function closestOnCircle(coordinate, circle) {
+  const r = circle.getRadius();
+  const center = circle.getCenter();
+  const x0 = center[0];
+  const y0 = center[1];
+  const x1 = coordinate[0];
+  const y1 = coordinate[1];
+  let dx = x1 - x0;
+  const dy = y1 - y0;
+  if (dx === 0 && dy === 0) {
+    dx = 1;
+  }
+  const d = Math.sqrt(dx * dx + dy * dy);
+  const x = x0 + r * dx / d;
+  const y = y0 + r * dy / d;
+  return [x, y];
+}
 function closestOnSegment(coordinate, segment) {
   const x0 = coordinate[0];
   const y0 = coordinate[1];
@@ -1521,17 +1538,27 @@ var Popups = class {
   open(kind, id, coordinate) {
     const key = `${kind}:${id}`;
     const node = this.nodeFor(key);
+    const opener = keyboardOpener(document.activeElement);
     this.close();
     if (!node) return;
     this.current = { kind, id: String(id), key, coordinate };
     node.hidden = false;
     this.position();
+    if (opener && this.current) {
+      this.returnFocusTo = opener;
+      focusInto(node);
+    }
   }
   close() {
     if (!this.current) return;
     const node = this.nodeFor(this.current.key);
+    const held = Boolean(node && node.contains(document.activeElement));
     if (node) node.hidden = true;
     this.current = null;
+    if (held && this.returnFocusTo && this.returnFocusTo.isConnected) {
+      this.returnFocusTo.focus();
+    }
+    this.returnFocusTo = null;
   }
   /**
    * Where the open popup should point, in map coordinates.
@@ -1588,6 +1615,16 @@ var Popups = class {
     this.roverMap.map.un("postrender", this.onPostrender);
   }
 };
+function keyboardOpener(active) {
+  if (!active || !active.closest) return null;
+  return active.closest("[data-rover-focus]");
+}
+function focusInto(node) {
+  const focusable = node.querySelector(
+    "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+  );
+  (focusable || node).focus();
+}
 function cssEscape(value) {
   return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/"/g, '\\"');
 }
@@ -4527,6 +4564,16 @@ function forEach(flatCoordinates, offset, end, stride, callback) {
     }
   }
   return false;
+}
+function getIntersectionPoint(segment1, segment2) {
+  const [a, b] = segment1;
+  const [c, d] = segment2;
+  const t = ((a[0] - c[0]) * (c[1] - d[1]) - (a[1] - c[1]) * (c[0] - d[0])) / ((a[0] - b[0]) * (c[1] - d[1]) - (a[1] - b[1]) * (c[0] - d[0]));
+  const u = ((a[0] - c[0]) * (a[1] - b[1]) - (a[1] - c[1]) * (a[0] - b[0])) / ((a[0] - b[0]) * (c[1] - d[1]) - (a[1] - b[1]) * (c[0] - d[0]));
+  if (0 <= t && t <= 1 && 0 <= u && u <= 1) {
+    return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+  }
+  return void 0;
 }
 
 // node_modules/ol/geom/flat/intersectsextent.js
@@ -48333,6 +48380,232 @@ var ScaleLine = class extends Control_default {
 };
 var ScaleLine_default = ScaleLine;
 
+// node_modules/ol/geom/Circle.js
+var Circle = class _Circle extends SimpleGeometry_default {
+  /**
+   * @param {!import("../coordinate.js").Coordinate} center Center.
+   *     For internal use, flat coordinates in combination with `layout` and no
+   *     `radius` are also accepted.
+   * @param {number} [radius] Radius in units of the projection.
+   * @param {import("./Geometry.js").GeometryLayout} [layout] Layout.
+   */
+  constructor(center, radius, layout) {
+    super();
+    if (layout !== void 0 && radius === void 0) {
+      this.setFlatCoordinates(layout, center);
+    } else {
+      radius = radius ? radius : 0;
+      this.setCenterAndRadius(center, radius, layout);
+    }
+  }
+  /**
+   * Make a complete copy of the geometry.
+   * @return {!Circle} Clone.
+   * @api
+   * @override
+   */
+  clone() {
+    const circle = new _Circle(
+      this.flatCoordinates.slice(),
+      void 0,
+      this.layout
+    );
+    circle.applyProperties(this);
+    return circle;
+  }
+  /**
+   * @param {number} x X.
+   * @param {number} y Y.
+   * @param {import("../coordinate.js").Coordinate} closestPoint Closest point.
+   * @param {number} minSquaredDistance Minimum squared distance.
+   * @return {number} Minimum squared distance.
+   * @override
+   */
+  closestPointXY(x, y, closestPoint, minSquaredDistance) {
+    const flatCoordinates = this.flatCoordinates;
+    const dx = x - flatCoordinates[0];
+    const dy = y - flatCoordinates[1];
+    const squaredDistance3 = dx * dx + dy * dy;
+    if (squaredDistance3 < minSquaredDistance) {
+      if (squaredDistance3 === 0) {
+        for (let i = 0; i < this.stride; ++i) {
+          closestPoint[i] = flatCoordinates[i];
+        }
+      } else {
+        const delta = this.getRadius() / Math.sqrt(squaredDistance3);
+        closestPoint[0] = flatCoordinates[0] + delta * dx;
+        closestPoint[1] = flatCoordinates[1] + delta * dy;
+        for (let i = 2; i < this.stride; ++i) {
+          closestPoint[i] = flatCoordinates[i];
+        }
+      }
+      closestPoint.length = this.stride;
+      return squaredDistance3;
+    }
+    return minSquaredDistance;
+  }
+  /**
+   * @param {number} x X.
+   * @param {number} y Y.
+   * @return {boolean} Contains (x, y).
+   * @override
+   */
+  containsXY(x, y) {
+    const flatCoordinates = this.flatCoordinates;
+    const dx = x - flatCoordinates[0];
+    const dy = y - flatCoordinates[1];
+    return dx * dx + dy * dy <= this.getRadiusSquared_();
+  }
+  /**
+   * Return the center of the circle as {@link module:ol/coordinate~Coordinate coordinate}.
+   * @return {import("../coordinate.js").Coordinate} Center.
+   * @api
+   */
+  getCenter() {
+    return this.flatCoordinates.slice(0, this.stride);
+  }
+  /**
+   * @param {import("../extent.js").Extent} extent Extent.
+   * @protected
+   * @return {import("../extent.js").Extent} extent Extent.
+   * @override
+   */
+  computeExtent(extent) {
+    const flatCoordinates = this.flatCoordinates;
+    const radius = flatCoordinates[this.stride] - flatCoordinates[0];
+    return createOrUpdate(
+      flatCoordinates[0] - radius,
+      flatCoordinates[1] - radius,
+      flatCoordinates[0] + radius,
+      flatCoordinates[1] + radius,
+      extent
+    );
+  }
+  /**
+   * Return the radius of the circle.
+   * @return {number} Radius.
+   * @api
+   */
+  getRadius() {
+    return Math.sqrt(this.getRadiusSquared_());
+  }
+  /**
+   * @private
+   * @return {number} Radius squared.
+   */
+  getRadiusSquared_() {
+    const dx = this.flatCoordinates[this.stride] - this.flatCoordinates[0];
+    const dy = this.flatCoordinates[this.stride + 1] - this.flatCoordinates[1];
+    return dx * dx + dy * dy;
+  }
+  /**
+   * Get the type of this geometry.
+   * @return {import("./Geometry.js").Type} Geometry type.
+   * @api
+   * @override
+   */
+  getType() {
+    return "Circle";
+  }
+  /**
+   * Test if the geometry and the passed extent intersect.
+   * @param {import("../extent.js").Extent} extent Extent.
+   * @return {boolean} `true` if the geometry and the extent intersect.
+   * @api
+   * @override
+   */
+  intersectsExtent(extent) {
+    const circleExtent = this.getExtent();
+    if (intersects(extent, circleExtent)) {
+      const center = this.getCenter();
+      if (extent[0] <= center[0] && extent[2] >= center[0]) {
+        return true;
+      }
+      if (extent[1] <= center[1] && extent[3] >= center[1]) {
+        return true;
+      }
+      return forEachCorner(extent, this.intersectsCoordinate.bind(this));
+    }
+    return false;
+  }
+  /**
+   * Set the center of the circle as {@link module:ol/coordinate~Coordinate coordinate}.
+   * @param {import("../coordinate.js").Coordinate} center Center.
+   * @api
+   */
+  setCenter(center) {
+    const stride = this.stride;
+    const radius = this.flatCoordinates[stride] - this.flatCoordinates[0];
+    const flatCoordinates = center.slice();
+    flatCoordinates[stride] = flatCoordinates[0] + radius;
+    for (let i = 1; i < stride; ++i) {
+      flatCoordinates[stride + i] = center[i];
+    }
+    this.setFlatCoordinates(this.layout, flatCoordinates);
+    this.changed();
+  }
+  /**
+   * Set the center (as {@link module:ol/coordinate~Coordinate coordinate}) and the radius (as
+   * number) of the circle.
+   * @param {!import("../coordinate.js").Coordinate} center Center.
+   * @param {number} radius Radius.
+   * @param {import("./Geometry.js").GeometryLayout} [layout] Layout.
+   * @api
+   */
+  setCenterAndRadius(center, radius, layout) {
+    this.setLayout(layout, center, 0);
+    if (!this.flatCoordinates) {
+      this.flatCoordinates = [];
+    }
+    const flatCoordinates = this.flatCoordinates;
+    let offset = deflateCoordinate(flatCoordinates, 0, center, this.stride);
+    flatCoordinates[offset++] = flatCoordinates[0] + radius;
+    for (let i = 1, ii = this.stride; i < ii; ++i) {
+      flatCoordinates[offset++] = flatCoordinates[i];
+    }
+    flatCoordinates.length = offset;
+    this.changed();
+  }
+  /**
+   * @override
+   */
+  getCoordinates() {
+    return null;
+  }
+  /**
+   * @override
+   */
+  setCoordinates(coordinates2, layout) {
+  }
+  /**
+   * Set the radius of the circle. The radius is in the units of the projection.
+   * @param {number} radius Radius.
+   * @api
+   */
+  setRadius(radius) {
+    this.flatCoordinates[this.stride] = this.flatCoordinates[0] + radius;
+    this.changed();
+  }
+  /**
+   * Rotate the geometry around a given coordinate. This modifies the geometry
+   * coordinates in place.
+   * @param {number} angle Rotation angle in counter-clockwise radians.
+   * @param {import("../coordinate.js").Coordinate} anchor The rotation center.
+   * @api
+   * @override
+   */
+  rotate(angle, anchor2) {
+    const center = this.getCenter();
+    const stride = this.getStride();
+    this.setCenter(
+      rotate2(center, 0, center.length, stride, angle, anchor2, center)
+    );
+    this.changed();
+  }
+};
+Circle.prototype.transform;
+var Circle_default2 = Circle;
+
 // node_modules/ol/interaction/tracing.js
 function getCoordinate(coordinates2, index) {
   const count = coordinates2.length;
@@ -48583,6 +48856,1035 @@ function getPointSegmentRelationship(x, y, start, end) {
   return sharedRel;
 }
 
+// node_modules/ol/interaction/Draw.js
+var DrawEventType = {
+  /**
+   * Triggered upon feature draw start
+   * @event DrawEvent#drawstart
+   * @api
+   */
+  DRAWSTART: "drawstart",
+  /**
+   * Triggered upon feature draw end
+   * @event DrawEvent#drawend
+   * @api
+   */
+  DRAWEND: "drawend",
+  /**
+   * Triggered upon feature draw abortion
+   * @event DrawEvent#drawabort
+   * @api
+   */
+  DRAWABORT: "drawabort"
+};
+var DrawEvent = class extends Event_default {
+  /**
+   * @param {DrawEventType} type Type.
+   * @param {Feature} feature The feature drawn.
+   */
+  constructor(type, feature) {
+    super(type);
+    this.feature = feature;
+  }
+};
+var Draw = class extends Pointer_default {
+  /**
+   * @param {Options} options Options.
+   */
+  constructor(options) {
+    const pointerOptions = (
+      /** @type {import("./Pointer.js").Options} */
+      options
+    );
+    if (!pointerOptions.stopDown) {
+      pointerOptions.stopDown = FALSE;
+    }
+    super(pointerOptions);
+    this.on;
+    this.once;
+    this.un;
+    this.options_ = options;
+    this.shouldHandle_ = false;
+    this.downPx_ = null;
+    this.downTimeout_;
+    this.lastDragTime_;
+    this.pointerType_;
+    this.freehand_ = false;
+    this.source_ = options.source ? options.source : null;
+    this.features_ = options.features ? options.features : null;
+    this.snapTolerance_ = options.snapTolerance ? options.snapTolerance : 12;
+    this.type_ = /** @type {import("../geom/Geometry.js").Type} */
+    options.type;
+    this.mode_ = getMode(this.type_);
+    this.stopClick_ = !!options.stopClick;
+    this.ignoreNextUpEvent_ = false;
+    this.minPoints_ = options.minPoints ? options.minPoints : this.mode_ === "Polygon" ? 3 : 2;
+    this.maxPoints_ = this.mode_ === "Circle" ? 2 : options.maxPoints ? options.maxPoints : Infinity;
+    this.finishCondition_ = options.finishCondition ? options.finishCondition : TRUE;
+    this.geometryLayout_ = options.geometryLayout ? options.geometryLayout : "XY";
+    let geometryFunction = options.geometryFunction;
+    if (!geometryFunction) {
+      const mode = this.mode_;
+      if (mode === "Circle") {
+        geometryFunction = (coordinates2, geometry, projection) => {
+          const circle = geometry ? (
+            /** @type {Circle} */
+            geometry
+          ) : new Circle_default2([NaN, NaN]);
+          const center = fromUserCoordinate(coordinates2[0], projection);
+          const squaredLength = squaredDistance2(
+            center,
+            fromUserCoordinate(coordinates2[coordinates2.length - 1], projection)
+          );
+          circle.setCenterAndRadius(
+            center,
+            Math.sqrt(squaredLength),
+            this.geometryLayout_
+          );
+          const userProjection2 = getUserProjection();
+          if (userProjection2) {
+            circle.transform(projection, userProjection2);
+          }
+          return circle;
+        };
+      } else {
+        let Constructor;
+        if (mode === "Point") {
+          Constructor = Point_default;
+        } else if (mode === "LineString") {
+          Constructor = LineString_default;
+        } else if (mode === "Polygon") {
+          Constructor = Polygon_default;
+        }
+        geometryFunction = (coordinates2, geometry, projection) => {
+          if (geometry) {
+            if (mode === "Polygon") {
+              if (coordinates2[0].length) {
+                geometry.setCoordinates(
+                  [coordinates2[0].concat([coordinates2[0][0]])],
+                  this.geometryLayout_
+                );
+              } else {
+                geometry.setCoordinates([], this.geometryLayout_);
+              }
+            } else {
+              geometry.setCoordinates(coordinates2, this.geometryLayout_);
+            }
+          } else {
+            geometry = new Constructor(coordinates2, this.geometryLayout_);
+          }
+          return geometry;
+        };
+      }
+    }
+    this.geometryFunction_ = geometryFunction;
+    this.dragVertexDelay_ = options.dragVertexDelay !== void 0 ? options.dragVertexDelay : 500;
+    this.finishCoordinate_ = null;
+    this.sketchFeature_ = null;
+    this.sketchPoint_ = null;
+    this.sketchCoords_ = null;
+    this.sketchLine_ = null;
+    this.sketchLineCoords_ = null;
+    this.squaredClickTolerance_ = options.clickTolerance ? options.clickTolerance * options.clickTolerance : 36;
+    this.overlay_ = new Vector_default({
+      source: new Vector_default2({
+        useSpatialIndex: false,
+        wrapX: options.wrapX ? options.wrapX : false
+      }),
+      style: options.style ? options.style : getDefaultStyleFunction(),
+      updateWhileInteracting: true
+    });
+    this.geometryName_ = options.geometryName;
+    this.condition_ = options.condition ? options.condition : noModifierKeys;
+    this.freehandCondition_;
+    if (options.freehand) {
+      this.freehandCondition_ = always;
+    } else {
+      this.freehandCondition_ = options.freehandCondition ? options.freehandCondition : shiftKeyOnly;
+    }
+    this.traceCondition_;
+    this.setTrace(options.trace || false);
+    this.traceState_ = { active: false };
+    this.traceSource_ = options.traceSource || options.source || null;
+    this.addChangeListener(Property_default.ACTIVE, this.updateState_);
+  }
+  /**
+   * Toggle tracing mode or set a tracing condition.
+   *
+   * @param {boolean|import("../events/condition.js").Condition} trace A boolean to toggle tracing mode or an event
+   *     condition that will be checked when a feature is clicked to determine if tracing should be active.
+   */
+  setTrace(trace) {
+    let condition;
+    if (!trace) {
+      condition = never;
+    } else if (trace === true) {
+      condition = always;
+    } else {
+      condition = trace;
+    }
+    this.traceCondition_ = condition;
+  }
+  /**
+   * Remove the interaction from its current map and attach it to the new map.
+   * Subclasses may set up event handlers to get notified about changes to
+   * the map here.
+   * @param {import("../Map.js").default} map Map.
+   * @override
+   */
+  setMap(map) {
+    super.setMap(map);
+    this.updateState_();
+  }
+  /**
+   * Set whether the drawing is done in freehand mode.
+   *
+   * @param {boolean} freehand Freehand drawing.
+   * @api
+   */
+  setFreehand(freehand) {
+    this.freehand_ = freehand;
+    if (this.freehand_) {
+      this.freehandCondition_ = always;
+    } else {
+      this.freehandCondition_ = this.options_ && this.options_.freehandCondition ? this.options_.freehandCondition : shiftKeyOnly;
+    }
+  }
+  /**
+   * Get the overlay layer that this interaction renders sketch features to.
+   * @return {VectorLayer} Overlay layer.
+   * @api
+   */
+  getOverlay() {
+    return this.overlay_;
+  }
+  /**
+   * Get if this interaction is in freehand mode.
+   * @return {boolean} Freehand drawing.
+   * @api
+   */
+  getFreehand() {
+    return this.freehand_;
+  }
+  /**
+   * Handles the {@link module:ol/MapBrowserEvent~MapBrowserEvent map browser event} and may actually draw or finish the drawing.
+   * @param {import("../MapBrowserEvent.js").default<PointerEvent>} event Map browser event.
+   * @return {boolean} `false` to stop event propagation.
+   * @api
+   * @override
+   */
+  handleEvent(event) {
+    if (event.originalEvent.type === EventType_default.CONTEXTMENU) {
+      event.originalEvent.preventDefault();
+    }
+    this.freehand_ = this.mode_ !== "Point" && this.freehandCondition_(event);
+    let move = event.type === MapBrowserEventType_default.POINTERMOVE;
+    let pass = true;
+    if (!this.freehand_ && this.lastDragTime_ && event.type === MapBrowserEventType_default.POINTERDRAG) {
+      const now2 = Date.now();
+      if (now2 - this.lastDragTime_ >= this.dragVertexDelay_) {
+        this.downPx_ = event.pixel;
+        this.shouldHandle_ = !this.freehand_;
+        move = true;
+      } else {
+        this.lastDragTime_ = void 0;
+      }
+      if (this.shouldHandle_ && this.downTimeout_ !== void 0) {
+        clearTimeout(this.downTimeout_);
+        this.downTimeout_ = void 0;
+      }
+    }
+    if (this.freehand_ && event.type === MapBrowserEventType_default.POINTERDRAG && this.sketchFeature_ !== null) {
+      this.addToDrawing_(event.coordinate);
+      pass = false;
+    } else if (this.freehand_ && event.type === MapBrowserEventType_default.POINTERDOWN) {
+      pass = false;
+    } else if (move && this.getPointerCount() < 2) {
+      pass = event.type === MapBrowserEventType_default.POINTERMOVE;
+      if (pass && this.freehand_) {
+        this.handlePointerMove_(event);
+        if (this.shouldHandle_) {
+          event.originalEvent.preventDefault();
+        }
+      } else if (event.originalEvent.pointerType === "mouse" || event.type === MapBrowserEventType_default.POINTERDRAG && this.downTimeout_ === void 0) {
+        this.handlePointerMove_(event);
+      }
+    } else if (event.type === MapBrowserEventType_default.DBLCLICK) {
+      pass = false;
+    }
+    return super.handleEvent(event) && pass;
+  }
+  /**
+   * Handle pointer down events.
+   * @param {import("../MapBrowserEvent.js").default<PointerEvent>} event Event.
+   * @return {boolean} If the event was consumed.
+   * @override
+   */
+  handleDownEvent(event) {
+    this.shouldHandle_ = !this.freehand_;
+    if (this.freehand_) {
+      this.downPx_ = event.pixel;
+      if (!this.finishCoordinate_) {
+        this.startDrawing_(event.coordinate);
+      }
+      return true;
+    }
+    if (!this.condition_(event)) {
+      this.lastDragTime_ = void 0;
+      return false;
+    }
+    this.lastDragTime_ = Date.now();
+    this.downTimeout_ = setTimeout(() => {
+      this.handlePointerMove_(
+        new MapBrowserEvent_default(
+          MapBrowserEventType_default.POINTERMOVE,
+          event.map,
+          event.originalEvent,
+          false,
+          event.frameState
+        )
+      );
+    }, this.dragVertexDelay_);
+    this.downPx_ = event.pixel;
+    return true;
+  }
+  /**
+   * @private
+   */
+  deactivateTrace_() {
+    this.traceState_ = { active: false };
+  }
+  /**
+   * Activate or deactivate trace state based on a browser event.
+   * @param {import("../MapBrowserEvent.js").default} event Event.
+   * @private
+   */
+  toggleTraceState_(event) {
+    if (!this.traceSource_ || !this.traceCondition_(event)) {
+      return;
+    }
+    if (this.traceState_.active) {
+      this.deactivateTrace_();
+      return;
+    }
+    const map = this.getMap();
+    const lowerLeft = map.getCoordinateFromPixel([
+      event.pixel[0] - this.snapTolerance_,
+      event.pixel[1] + this.snapTolerance_
+    ]);
+    const upperRight = map.getCoordinateFromPixel([
+      event.pixel[0] + this.snapTolerance_,
+      event.pixel[1] - this.snapTolerance_
+    ]);
+    const extent = boundingExtent([lowerLeft, upperRight]);
+    const features = this.traceSource_.getFeaturesInExtent(extent);
+    if (features.length === 0) {
+      return;
+    }
+    const targets = getTraceTargets(event.coordinate, features);
+    if (targets.length) {
+      this.traceState_ = {
+        active: true,
+        startCoord: event.coordinate.slice(),
+        targets,
+        targetIndex: -1
+      };
+    }
+  }
+  /**
+   * @param {TraceTarget} target The trace target.
+   * @param {number} endIndex The new end index of the trace.
+   * @private
+   */
+  addOrRemoveTracedCoordinates_(target, endIndex) {
+    const previouslyForward = target.startIndex <= target.endIndex;
+    const currentlyForward = target.startIndex <= endIndex;
+    if (previouslyForward === currentlyForward) {
+      if (previouslyForward && endIndex > target.endIndex || !previouslyForward && endIndex < target.endIndex) {
+        this.addTracedCoordinates_(target, target.endIndex, endIndex);
+      } else if (previouslyForward && endIndex < target.endIndex || !previouslyForward && endIndex > target.endIndex) {
+        this.removeTracedCoordinates_(endIndex, target.endIndex);
+      }
+    } else {
+      this.removeTracedCoordinates_(target.startIndex, target.endIndex);
+      this.addTracedCoordinates_(target, target.startIndex, endIndex);
+    }
+  }
+  /**
+   * @param {number} fromIndex The start index.
+   * @param {number} toIndex The end index.
+   * @private
+   */
+  removeTracedCoordinates_(fromIndex, toIndex) {
+    if (fromIndex === toIndex) {
+      return;
+    }
+    let remove = 0;
+    if (fromIndex < toIndex) {
+      const start = Math.ceil(fromIndex);
+      let end = Math.floor(toIndex);
+      if (end === toIndex) {
+        end -= 1;
+      }
+      remove = end - start + 1;
+    } else {
+      const start = Math.floor(fromIndex);
+      let end = Math.ceil(toIndex);
+      if (end === toIndex) {
+        end += 1;
+      }
+      remove = start - end + 1;
+    }
+    if (remove > 0) {
+      this.removeLastPoints_(remove);
+    }
+  }
+  /**
+   * @param {TraceTarget} target The trace target.
+   * @param {number} fromIndex The start index.
+   * @param {number} toIndex The end index.
+   * @private
+   */
+  addTracedCoordinates_(target, fromIndex, toIndex) {
+    if (fromIndex === toIndex) {
+      return;
+    }
+    const coordinates2 = [];
+    if (fromIndex < toIndex) {
+      const start = Math.ceil(fromIndex);
+      let end = Math.floor(toIndex);
+      if (end === toIndex) {
+        end -= 1;
+      }
+      for (let i = start; i <= end; ++i) {
+        coordinates2.push(getCoordinate(target.coordinates, i));
+      }
+    } else {
+      const start = Math.floor(fromIndex);
+      let end = Math.ceil(toIndex);
+      if (end === toIndex) {
+        end += 1;
+      }
+      for (let i = start; i >= end; --i) {
+        coordinates2.push(getCoordinate(target.coordinates, i));
+      }
+    }
+    if (coordinates2.length) {
+      this.appendCoordinates(coordinates2);
+    }
+  }
+  /**
+   * Update the trace.
+   * @param {import("../MapBrowserEvent.js").default} event Event.
+   * @private
+   */
+  updateTrace_(event) {
+    const traceState = this.traceState_;
+    if (!traceState.active) {
+      return;
+    }
+    if (traceState.targetIndex === -1) {
+      const startPx = event.map.getPixelFromCoordinate(traceState.startCoord);
+      if (distance(startPx, event.pixel) < this.snapTolerance_) {
+        return;
+      }
+    }
+    const updatedTraceTarget = getTraceTargetUpdate(
+      event.coordinate,
+      traceState,
+      this.getMap(),
+      this.snapTolerance_
+    );
+    if (traceState.targetIndex !== updatedTraceTarget.index) {
+      if (traceState.targetIndex !== -1) {
+        const oldTarget = traceState.targets[traceState.targetIndex];
+        this.removeTracedCoordinates_(oldTarget.startIndex, oldTarget.endIndex);
+      }
+      const newTarget = traceState.targets[updatedTraceTarget.index];
+      this.addTracedCoordinates_(
+        newTarget,
+        newTarget.startIndex,
+        updatedTraceTarget.endIndex
+      );
+    } else {
+      const target2 = traceState.targets[traceState.targetIndex];
+      this.addOrRemoveTracedCoordinates_(target2, updatedTraceTarget.endIndex);
+    }
+    traceState.targetIndex = updatedTraceTarget.index;
+    const target = traceState.targets[traceState.targetIndex];
+    target.endIndex = updatedTraceTarget.endIndex;
+    const coordinate = interpolateCoordinate(
+      target.coordinates,
+      target.endIndex
+    );
+    const pixel = this.getMap().getPixelFromCoordinate(coordinate);
+    event.coordinate = coordinate;
+    event.pixel = [Math.round(pixel[0]), Math.round(pixel[1])];
+  }
+  /**
+   * Handle drag events.
+   * @param {import("../MapBrowserEvent.js").default<PointerEvent>} event Event.
+   * @override
+   */
+  handleDragEvent(event) {
+    this.ignoreNextUpEvent_ = true;
+    super.handleDragEvent(event);
+  }
+  /**
+   * Handle pointer up events.
+   * @param {import("../MapBrowserEvent.js").default<PointerEvent>} event Event.
+   * @return {boolean} If the event was consumed.
+   * @override
+   */
+  handleUpEvent(event) {
+    let pass = true;
+    if (this.getPointerCount() === 0) {
+      if (this.downTimeout_) {
+        clearTimeout(this.downTimeout_);
+        this.downTimeout_ = void 0;
+      }
+      this.handlePointerMove_(event);
+      const tracing = this.traceState_.active;
+      if (!this.ignoreNextUpEvent_) {
+        this.toggleTraceState_(event);
+      }
+      if (this.shouldHandle_) {
+        const startingToDraw = !this.finishCoordinate_;
+        if (startingToDraw) {
+          this.startDrawing_(event.coordinate);
+        }
+        if (!startingToDraw && this.freehand_) {
+          this.finishDrawing();
+        } else if (!this.freehand_ && (!startingToDraw || this.mode_ === "Point")) {
+          if (this.atFinish_(event.pixel, tracing)) {
+            if (this.finishCondition_(event)) {
+              this.finishDrawing();
+            }
+          } else {
+            this.addToDrawing_(event.coordinate);
+          }
+        }
+        pass = false;
+      } else if (this.freehand_) {
+        this.abortDrawing();
+      }
+    }
+    this.ignoreNextUpEvent_ = false;
+    if (!pass && this.stopClick_) {
+      event.preventDefault();
+    }
+    return pass;
+  }
+  /**
+   * Handle move events.
+   * @param {import("../MapBrowserEvent.js").default<PointerEvent>} event A move event.
+   * @private
+   */
+  handlePointerMove_(event) {
+    this.pointerType_ = event.originalEvent.pointerType;
+    if (this.downPx_ && (!this.freehand_ && this.shouldHandle_ || this.freehand_ && !this.shouldHandle_)) {
+      const downPx = this.downPx_;
+      const clickPx = event.pixel;
+      const dx = downPx[0] - clickPx[0];
+      const dy = downPx[1] - clickPx[1];
+      const squaredDistance3 = dx * dx + dy * dy;
+      this.shouldHandle_ = this.freehand_ ? squaredDistance3 > this.squaredClickTolerance_ : squaredDistance3 <= this.squaredClickTolerance_;
+      if (!this.shouldHandle_) {
+        return;
+      }
+    }
+    if (!this.finishCoordinate_) {
+      this.createOrUpdateSketchPoint_(event.coordinate.slice());
+      return;
+    }
+    this.updateTrace_(event);
+    this.modifyDrawing_(event.coordinate);
+  }
+  /**
+   * Determine if an event is within the snapping tolerance of the start coord.
+   * @param {import("../pixel.js").Pixel} pixel Pixel.
+   * @param {boolean} [tracing] Drawing in trace mode (only stop if at the starting point).
+   * @return {boolean} The event is within the snapping tolerance of the start.
+   * @private
+   */
+  atFinish_(pixel, tracing) {
+    let at = false;
+    if (this.sketchFeature_) {
+      let potentiallyDone = false;
+      let potentiallyFinishCoordinates = [this.finishCoordinate_];
+      const mode = this.mode_;
+      if (mode === "Point") {
+        at = true;
+      } else if (mode === "Circle") {
+        at = this.sketchCoords_.length === 2;
+      } else if (mode === "LineString") {
+        potentiallyDone = !tracing && this.sketchCoords_.length > this.minPoints_;
+      } else if (mode === "Polygon") {
+        const sketchCoords = (
+          /** @type {PolyCoordType} */
+          this.sketchCoords_
+        );
+        potentiallyDone = sketchCoords[0].length > this.minPoints_;
+        potentiallyFinishCoordinates = [
+          sketchCoords[0][0],
+          sketchCoords[0][sketchCoords[0].length - 2]
+        ];
+        if (tracing) {
+          potentiallyFinishCoordinates = [sketchCoords[0][0]];
+        } else {
+          potentiallyFinishCoordinates = [
+            sketchCoords[0][0],
+            sketchCoords[0][sketchCoords[0].length - 2]
+          ];
+        }
+      }
+      if (potentiallyDone) {
+        const map = this.getMap();
+        for (let i = 0, ii = potentiallyFinishCoordinates.length; i < ii; i++) {
+          const finishCoordinate = potentiallyFinishCoordinates[i];
+          const finishPixel = map.getPixelFromCoordinate(finishCoordinate);
+          const dx = pixel[0] - finishPixel[0];
+          const dy = pixel[1] - finishPixel[1];
+          const snapTolerance = this.freehand_ ? 1 : this.snapTolerance_;
+          at = Math.sqrt(dx * dx + dy * dy) <= snapTolerance;
+          if (at) {
+            this.finishCoordinate_ = finishCoordinate;
+            break;
+          }
+        }
+      }
+    }
+    return at;
+  }
+  /**
+   * @param {import("../coordinate.js").Coordinate} coordinates Coordinate.
+   * @private
+   */
+  createOrUpdateSketchPoint_(coordinates2) {
+    if (!this.sketchPoint_) {
+      this.sketchPoint_ = new Feature_default(new Point_default(coordinates2));
+      this.updateSketchFeatures_();
+    } else {
+      const sketchPointGeom = this.sketchPoint_.getGeometry();
+      sketchPointGeom.setCoordinates(coordinates2);
+    }
+  }
+  /**
+   * @param {import("../geom/Polygon.js").default} geometry Polygon geometry.
+   * @private
+   */
+  createOrUpdateCustomSketchLine_(geometry) {
+    if (!this.sketchLine_) {
+      this.sketchLine_ = new Feature_default();
+    }
+    const ring = geometry.getLinearRing(0);
+    let sketchLineGeom = this.sketchLine_.getGeometry();
+    if (!sketchLineGeom) {
+      sketchLineGeom = new LineString_default(
+        ring.getFlatCoordinates(),
+        ring.getLayout()
+      );
+      this.sketchLine_.setGeometry(sketchLineGeom);
+    } else {
+      sketchLineGeom.setFlatCoordinates(
+        ring.getLayout(),
+        ring.getFlatCoordinates()
+      );
+      sketchLineGeom.changed();
+    }
+  }
+  /**
+   * Start the drawing.
+   * @param {import("../coordinate.js").Coordinate} start Start coordinate.
+   * @private
+   */
+  startDrawing_(start) {
+    const projection = this.getMap().getView().getProjection();
+    const stride = getStrideForLayout(this.geometryLayout_);
+    while (start.length < stride) {
+      start.push(0);
+    }
+    this.finishCoordinate_ = start;
+    if (this.mode_ === "Point") {
+      this.sketchCoords_ = start.slice();
+    } else if (this.mode_ === "Polygon") {
+      this.sketchCoords_ = [[start.slice(), start.slice()]];
+      this.sketchLineCoords_ = this.sketchCoords_[0];
+    } else {
+      this.sketchCoords_ = [start.slice(), start.slice()];
+    }
+    if (this.sketchLineCoords_) {
+      this.sketchLine_ = new Feature_default(new LineString_default(this.sketchLineCoords_));
+    }
+    const geometry = this.geometryFunction_(
+      this.sketchCoords_,
+      void 0,
+      projection
+    );
+    this.sketchFeature_ = new Feature_default();
+    if (this.geometryName_) {
+      this.sketchFeature_.setGeometryName(this.geometryName_);
+    }
+    this.sketchFeature_.setGeometry(geometry);
+    this.updateSketchFeatures_();
+    this.dispatchEvent(
+      new DrawEvent(DrawEventType.DRAWSTART, this.sketchFeature_)
+    );
+  }
+  /**
+   * Modify the drawing.
+   * @param {import("../coordinate.js").Coordinate} coordinate Coordinate.
+   * @private
+   */
+  modifyDrawing_(coordinate) {
+    const map = this.getMap();
+    const geometry = this.sketchFeature_.getGeometry();
+    const projection = map.getView().getProjection();
+    const stride = getStrideForLayout(this.geometryLayout_);
+    let coordinates2, last;
+    while (coordinate.length < stride) {
+      coordinate.push(0);
+    }
+    if (this.mode_ === "Point") {
+      last = this.sketchCoords_;
+    } else if (this.mode_ === "Polygon") {
+      coordinates2 = /** @type {PolyCoordType} */
+      this.sketchCoords_[0];
+      last = coordinates2[coordinates2.length - 1];
+      if (this.atFinish_(map.getPixelFromCoordinate(coordinate))) {
+        coordinate = this.finishCoordinate_.slice();
+      }
+    } else {
+      coordinates2 = this.sketchCoords_;
+      last = coordinates2[coordinates2.length - 1];
+    }
+    last[0] = coordinate[0];
+    last[1] = coordinate[1];
+    this.geometryFunction_(
+      /** @type {!LineCoordType} */
+      this.sketchCoords_,
+      geometry,
+      projection
+    );
+    if (this.sketchPoint_) {
+      const sketchPointGeom = this.sketchPoint_.getGeometry();
+      sketchPointGeom.setCoordinates(coordinate);
+    }
+    if (geometry.getType() === "Polygon" && this.mode_ !== "Polygon") {
+      this.createOrUpdateCustomSketchLine_(
+        /** @type {Polygon} */
+        geometry
+      );
+    } else if (this.sketchLineCoords_) {
+      const sketchLineGeom = this.sketchLine_.getGeometry();
+      sketchLineGeom.setCoordinates(this.sketchLineCoords_);
+    }
+    this.updateSketchFeatures_();
+  }
+  /**
+   * Add a new coordinate to the drawing.
+   * @param {!PointCoordType} coordinate Coordinate
+   * @return {Feature<import("../geom/SimpleGeometry.js").default>} The sketch feature.
+   * @private
+   */
+  addToDrawing_(coordinate) {
+    const geometry = this.sketchFeature_.getGeometry();
+    const projection = this.getMap().getView().getProjection();
+    let done;
+    let coordinates2;
+    const mode = this.mode_;
+    if (mode === "LineString" || mode === "Circle") {
+      this.finishCoordinate_ = coordinate.slice();
+      coordinates2 = /** @type {LineCoordType} */
+      this.sketchCoords_;
+      if (coordinates2.length >= this.maxPoints_) {
+        if (this.freehand_) {
+          coordinates2.pop();
+        } else {
+          done = true;
+        }
+      }
+      coordinates2.push(coordinate.slice());
+      this.geometryFunction_(coordinates2, geometry, projection);
+    } else if (mode === "Polygon") {
+      coordinates2 = /** @type {PolyCoordType} */
+      this.sketchCoords_[0];
+      if (coordinates2.length >= this.maxPoints_) {
+        if (this.freehand_) {
+          coordinates2.pop();
+        } else {
+          done = true;
+        }
+      }
+      coordinates2.push(coordinate.slice());
+      if (done) {
+        this.finishCoordinate_ = coordinates2[0];
+      }
+      this.geometryFunction_(this.sketchCoords_, geometry, projection);
+    }
+    this.createOrUpdateSketchPoint_(coordinate.slice());
+    this.updateSketchFeatures_();
+    if (done) {
+      return this.finishDrawing();
+    }
+    return this.sketchFeature_;
+  }
+  /**
+   * @param {number} n The number of points to remove.
+   */
+  removeLastPoints_(n) {
+    if (!this.sketchFeature_) {
+      return;
+    }
+    const geometry = this.sketchFeature_.getGeometry();
+    const projection = this.getMap().getView().getProjection();
+    const mode = this.mode_;
+    for (let i = 0; i < n; ++i) {
+      let coordinates2;
+      if (mode === "LineString" || mode === "Circle") {
+        coordinates2 = /** @type {LineCoordType} */
+        this.sketchCoords_;
+        coordinates2.splice(-2, 1);
+        if (coordinates2.length >= 2) {
+          this.finishCoordinate_ = coordinates2[coordinates2.length - 2].slice();
+          const finishCoordinate = this.finishCoordinate_.slice();
+          coordinates2[coordinates2.length - 1] = finishCoordinate;
+          this.createOrUpdateSketchPoint_(finishCoordinate);
+        }
+        this.geometryFunction_(coordinates2, geometry, projection);
+        if (geometry.getType() === "Polygon" && this.sketchLine_) {
+          this.createOrUpdateCustomSketchLine_(
+            /** @type {Polygon} */
+            geometry
+          );
+        }
+      } else if (mode === "Polygon") {
+        coordinates2 = /** @type {PolyCoordType} */
+        this.sketchCoords_[0];
+        coordinates2.splice(-2, 1);
+        const sketchLineGeom = this.sketchLine_.getGeometry();
+        if (coordinates2.length >= 2) {
+          const finishCoordinate = coordinates2[coordinates2.length - 2].slice();
+          coordinates2[coordinates2.length - 1] = finishCoordinate;
+          this.createOrUpdateSketchPoint_(finishCoordinate);
+        }
+        sketchLineGeom.setCoordinates(coordinates2);
+        this.geometryFunction_(this.sketchCoords_, geometry, projection);
+      }
+      if (coordinates2.length === 1) {
+        this.abortDrawing();
+        break;
+      }
+    }
+    this.updateSketchFeatures_();
+  }
+  /**
+   * Remove last point of the feature currently being drawn. Does not do anything when
+   * drawing POINT or MULTI_POINT geometries.
+   * @api
+   */
+  removeLastPoint() {
+    this.removeLastPoints_(1);
+  }
+  /**
+   * Stop drawing and add the sketch feature to the target layer.
+   * The {@link module:ol/interaction/Draw~DrawEventType.DRAWEND} event is
+   * dispatched before inserting the feature.
+   * @return {Feature<import("../geom/SimpleGeometry.js").default>|null} The drawn feature.
+   * @api
+   */
+  finishDrawing() {
+    const sketchFeature = this.abortDrawing_();
+    if (!sketchFeature) {
+      return null;
+    }
+    let coordinates2 = this.sketchCoords_;
+    const geometry = sketchFeature.getGeometry();
+    const projection = this.getMap().getView().getProjection();
+    if (this.mode_ === "LineString") {
+      coordinates2.pop();
+      this.geometryFunction_(coordinates2, geometry, projection);
+    } else if (this.mode_ === "Polygon") {
+      coordinates2[0].pop();
+      this.geometryFunction_(coordinates2, geometry, projection);
+      coordinates2 = geometry.getCoordinates();
+    }
+    if (this.type_ === "MultiPoint") {
+      sketchFeature.setGeometry(
+        new MultiPoint_default([
+          /** @type {PointCoordType} */
+          coordinates2
+        ])
+      );
+    } else if (this.type_ === "MultiLineString") {
+      sketchFeature.setGeometry(
+        new MultiLineString_default([
+          /** @type {LineCoordType} */
+          coordinates2
+        ])
+      );
+    } else if (this.type_ === "MultiPolygon") {
+      sketchFeature.setGeometry(
+        new MultiPolygon_default([
+          /** @type {PolyCoordType} */
+          coordinates2
+        ])
+      );
+    }
+    this.dispatchEvent(new DrawEvent(DrawEventType.DRAWEND, sketchFeature));
+    if (this.features_) {
+      this.features_.push(sketchFeature);
+    }
+    if (this.source_) {
+      this.source_.addFeature(sketchFeature);
+    }
+    return sketchFeature;
+  }
+  /**
+   * Stop drawing without adding the sketch feature to the target layer.
+   * @return {Feature<import("../geom/SimpleGeometry.js").default>|null} The sketch feature (or null if none).
+   * @private
+   */
+  abortDrawing_() {
+    this.finishCoordinate_ = null;
+    const sketchFeature = this.sketchFeature_;
+    this.sketchFeature_ = null;
+    this.sketchPoint_ = null;
+    this.sketchLine_ = null;
+    this.overlay_.getSource().clear(true);
+    this.deactivateTrace_();
+    return sketchFeature;
+  }
+  /**
+   * Stop drawing without adding the sketch feature to the target layer.
+   * @api
+   */
+  abortDrawing() {
+    const sketchFeature = this.abortDrawing_();
+    if (sketchFeature) {
+      this.dispatchEvent(new DrawEvent(DrawEventType.DRAWABORT, sketchFeature));
+    }
+  }
+  /**
+   * Append coordinates to the end of the geometry that is currently being drawn.
+   * This can be used when drawing LineStrings or Polygons. Coordinates will
+   * either be appended to the current LineString or the outer ring of the current
+   * Polygon. If no geometry is being drawn, a new one will be created.
+   * @param {!LineCoordType} coordinates Linear coordinates to be appended to
+   * the coordinate array.
+   * @api
+   */
+  appendCoordinates(coordinates2) {
+    const mode = this.mode_;
+    const newDrawing = !this.sketchFeature_;
+    if (newDrawing) {
+      this.startDrawing_(coordinates2[0]);
+    }
+    let sketchCoords;
+    if (mode === "LineString" || mode === "Circle") {
+      sketchCoords = /** @type {LineCoordType} */
+      this.sketchCoords_;
+    } else if (mode === "Polygon") {
+      sketchCoords = this.sketchCoords_ && this.sketchCoords_.length ? (
+        /** @type {PolyCoordType} */
+        this.sketchCoords_[0]
+      ) : [];
+    } else {
+      return;
+    }
+    if (newDrawing) {
+      sketchCoords.shift();
+    }
+    sketchCoords.pop();
+    for (let i = 0; i < coordinates2.length; i++) {
+      this.addToDrawing_(coordinates2[i]);
+    }
+    const ending = coordinates2[coordinates2.length - 1];
+    this.sketchFeature_ = this.addToDrawing_(ending);
+    this.modifyDrawing_(ending);
+  }
+  /**
+   * Initiate draw mode by starting from an existing geometry which will
+   * receive new additional points. This only works on features with
+   * `LineString` geometries, where the interaction will extend lines by adding
+   * points to the end of the coordinates array.
+   * This will change the original feature, instead of drawing a copy.
+   *
+   * The function will dispatch a `drawstart` event.
+   *
+   * @param {!Feature<LineString>} feature Feature to be extended.
+   * @api
+   */
+  extend(feature) {
+    const geometry = feature.getGeometry();
+    const lineString = geometry;
+    this.sketchFeature_ = feature;
+    this.sketchCoords_ = lineString.getCoordinates();
+    const last = this.sketchCoords_[this.sketchCoords_.length - 1];
+    this.finishCoordinate_ = last.slice();
+    this.sketchCoords_.push(last.slice());
+    this.sketchPoint_ = new Feature_default(new Point_default(last));
+    this.updateSketchFeatures_();
+    this.dispatchEvent(
+      new DrawEvent(DrawEventType.DRAWSTART, this.sketchFeature_)
+    );
+  }
+  /**
+   * Redraw the sketch features.
+   * @private
+   */
+  updateSketchFeatures_() {
+    const sketchFeatures = [];
+    if (this.sketchFeature_) {
+      sketchFeatures.push(this.sketchFeature_);
+    }
+    if (this.sketchLine_) {
+      sketchFeatures.push(this.sketchLine_);
+    }
+    if (this.sketchPoint_) {
+      sketchFeatures.push(this.sketchPoint_);
+    }
+    const overlaySource = this.overlay_.getSource();
+    overlaySource.clear(true);
+    overlaySource.addFeatures(sketchFeatures);
+  }
+  /**
+   * @private
+   */
+  updateState_() {
+    const map = this.getMap();
+    const active = this.getActive();
+    if (!map || !active) {
+      this.abortDrawing();
+    }
+    this.overlay_.setMap(active ? map : null);
+  }
+};
+function getDefaultStyleFunction() {
+  const styles = createEditingStyle();
+  return function(feature, resolution) {
+    return styles[feature.getGeometry().getType()];
+  };
+}
+function getMode(type) {
+  switch (type) {
+    case "Point":
+    case "MultiPoint":
+      return "Point";
+    case "LineString":
+    case "MultiLineString":
+      return "LineString";
+    case "Polygon":
+    case "MultiPolygon":
+      return "Polygon";
+    case "Circle":
+      return "Circle";
+    default:
+      throw new Error("Invalid type: " + type);
+  }
+}
+var Draw_default = Draw;
+
 // node_modules/ol/interaction/Modify.js
 var CIRCLE_CENTER_INDEX = 0;
 var CIRCLE_CIRCUMFERENCE_INDEX = 1;
@@ -48671,7 +49973,7 @@ var Modify = class extends Pointer_default {
         useSpatialIndex: false,
         wrapX: !!options.wrapX
       }),
-      style: options.style ? options.style : getDefaultStyleFunction(),
+      style: options.style ? options.style : getDefaultStyleFunction2(),
       updateWhileAnimating: true,
       updateWhileInteracting: true
     });
@@ -50379,13 +51681,636 @@ function closestOnSegmentData(pointCoordinates, segmentData, projection) {
     projection
   );
 }
-function getDefaultStyleFunction() {
+function getDefaultStyleFunction2() {
   const style = createEditingStyle();
   return function(feature, resolution) {
     return style["Point"];
   };
 }
 var Modify_default = Modify;
+
+// node_modules/ol/events/SnapEvent.js
+var SnapEventType = {
+  /**
+   * Triggered upon snapping to vertex or edge
+   * @event SnapEvent#snap
+   * @api
+   */
+  SNAP: "snap",
+  /**
+   * Triggered if no longer snapped
+   * @event SnapEvent#unsnap
+   * @api
+   */
+  UNSNAP: "unsnap"
+};
+var SnapEvent = class extends Event_default {
+  /**
+   * @param {SnapEventType} type Type.
+   * @param {Object} options Options.
+   * @param {import("../coordinate.js").Coordinate} options.vertex The snapped vertex.
+   * @param {import("../coordinate.js").Coordinate} options.vertexPixel The pixel of the snapped vertex.
+   * @param {import("../Feature.js").default} options.feature The feature being snapped.
+   * @param {Array<import("../coordinate.js").Coordinate>|null} options.segment Segment, or `null` if snapped to a vertex.
+   */
+  constructor(type, options) {
+    super(type);
+    this.vertex = options.vertex;
+    this.vertexPixel = options.vertexPixel;
+    this.feature = options.feature;
+    this.segment = options.segment;
+  }
+};
+
+// node_modules/ol/interaction/Snap.js
+var GEOMETRY_SEGMENTERS = {
+  /**
+   * @param {import("../geom/Circle.js").default} geometry Geometry.
+   * @param {import("../proj/Projection.js").default} projection Projection.
+   * @return {Array<Segment>} Segments
+   */
+  Circle(geometry, projection) {
+    let circleGeometry = geometry;
+    const userProjection2 = getUserProjection();
+    if (userProjection2) {
+      circleGeometry = circleGeometry.clone().transform(userProjection2, projection);
+    }
+    const polygon = fromCircle(circleGeometry);
+    if (userProjection2) {
+      polygon.transform(projection, userProjection2);
+    }
+    return GEOMETRY_SEGMENTERS.Polygon(polygon);
+  },
+  /**
+   * @param {import("../geom/GeometryCollection.js").default} geometry Geometry.
+   * @param {import("../proj/Projection.js").default} projection Projection.
+   * @return {Array<Segment>} Segments
+   */
+  GeometryCollection(geometry, projection) {
+    const segments = [];
+    const geometries = geometry.getGeometriesArray();
+    for (let i = 0; i < geometries.length; ++i) {
+      const segmenter2 = this[geometries[i].getType()];
+      if (segmenter2) {
+        segments.push(segmenter2(geometries[i], projection));
+      }
+    }
+    return segments.flat();
+  },
+  /**
+   * @param {import("../geom/LineString.js").default} geometry Geometry.
+   * @return {Array<Segment>} Segments
+   */
+  LineString(geometry) {
+    const segments = [];
+    const coordinates2 = geometry.getFlatCoordinates();
+    const stride = geometry.getStride();
+    for (let i = 0, ii = coordinates2.length - stride; i < ii; i += stride) {
+      segments.push([
+        coordinates2.slice(i, i + 2),
+        coordinates2.slice(i + stride, i + stride + 2)
+      ]);
+    }
+    return segments;
+  },
+  /**
+   * @param {import("../geom/MultiLineString.js").default} geometry Geometry.
+   * @return {Array<Segment>} Segments
+   */
+  MultiLineString(geometry) {
+    const segments = [];
+    const coordinates2 = geometry.getFlatCoordinates();
+    const stride = geometry.getStride();
+    const ends = geometry.getEnds();
+    let offset = 0;
+    for (let i = 0, ii = ends.length; i < ii; ++i) {
+      const end = ends[i];
+      for (let j = offset, jj = end - stride; j < jj; j += stride) {
+        segments.push([
+          coordinates2.slice(j, j + 2),
+          coordinates2.slice(j + stride, j + stride + 2)
+        ]);
+      }
+      offset = end;
+    }
+    return segments;
+  },
+  /**
+   * @param {import("../geom/MultiPoint.js").default} geometry Geometry.
+   * @return {Array<Segment>} Segments
+   */
+  MultiPoint(geometry) {
+    const segments = [];
+    const coordinates2 = geometry.getFlatCoordinates();
+    const stride = geometry.getStride();
+    for (let i = 0, ii = coordinates2.length; i < ii; i += stride) {
+      segments.push([coordinates2.slice(i, i + 2)]);
+    }
+    return segments;
+  },
+  /**
+   * @param {import("../geom/MultiPolygon.js").default} geometry Geometry.
+   * @return {Array<Segment>} Segments
+   */
+  MultiPolygon(geometry) {
+    const segments = [];
+    const coordinates2 = geometry.getFlatCoordinates();
+    const stride = geometry.getStride();
+    const endss = geometry.getEndss();
+    let offset = 0;
+    for (let i = 0, ii = endss.length; i < ii; ++i) {
+      const ends = endss[i];
+      for (let j = 0, jj = ends.length; j < jj; ++j) {
+        const end = ends[j];
+        for (let k = offset, kk = end - stride; k < kk; k += stride) {
+          segments.push([
+            coordinates2.slice(k, k + 2),
+            coordinates2.slice(k + stride, k + stride + 2)
+          ]);
+        }
+        offset = end;
+      }
+    }
+    return segments;
+  },
+  /**
+   * @param {import("../geom/Point.js").default} geometry Geometry.
+   * @return {Array<Segment>} Segments
+   */
+  Point(geometry) {
+    return [[geometry.getFlatCoordinates().slice(0, 2)]];
+  },
+  /**
+   * @param {import("../geom/Polygon.js").default} geometry Geometry.
+   * @return {Array<Segment>} Segments
+   */
+  Polygon(geometry) {
+    const segments = [];
+    const coordinates2 = geometry.getFlatCoordinates();
+    const stride = geometry.getStride();
+    const ends = geometry.getEnds();
+    let offset = 0;
+    for (let i = 0, ii = ends.length; i < ii; ++i) {
+      const end = ends[i];
+      for (let j = offset, jj = end - stride; j < jj; j += stride) {
+        segments.push([
+          coordinates2.slice(j, j + 2),
+          coordinates2.slice(j + stride, j + stride + 2)
+        ]);
+      }
+      offset = end;
+    }
+    return segments;
+  }
+};
+function getFeatureFromEvent(evt) {
+  if (
+    /** @type {import("../source/Vector.js").VectorSourceEvent} */
+    evt.feature
+  ) {
+    return (
+      /** @type {import("../source/Vector.js").VectorSourceEvent} */
+      evt.feature
+    );
+  }
+  if (
+    /** @type {import("../Collection.js").CollectionEvent<import("../Feature.js").default>} */
+    evt.element
+  ) {
+    return (
+      /** @type {import("../Collection.js").CollectionEvent<import("../Feature.js").default>} */
+      evt.element
+    );
+  }
+  return null;
+}
+var tempSegment2 = [];
+var tempExtents = [];
+var tempSegmentData = [];
+var Snap = class extends Pointer_default {
+  /**
+   * @param {Options} [options] Options.
+   */
+  constructor(options) {
+    options = options ? options : {};
+    super({
+      handleDownEvent: TRUE,
+      stopDown: FALSE
+    });
+    this.on;
+    this.once;
+    this.un;
+    this.source_ = options.source ? options.source : null;
+    this.vertex_ = options.vertex !== void 0 ? options.vertex : true;
+    this.edge_ = options.edge !== void 0 ? options.edge : true;
+    this.intersection_ = options.intersection !== void 0 ? options.intersection : false;
+    this.features_ = options.features ? options.features : null;
+    this.featuresListenerKeys_ = [];
+    this.featureChangeListenerKeys_ = {};
+    this.indexedFeaturesExtents_ = {};
+    this.pendingFeatures_ = {};
+    this.pixelTolerance_ = options.pixelTolerance !== void 0 ? options.pixelTolerance : 10;
+    this.rBush_ = new RBush_default();
+    this.snapped_ = null;
+    this.segmenters_ = Object.assign(
+      {},
+      GEOMETRY_SEGMENTERS,
+      options.segmenters
+    );
+  }
+  /**
+   * Add a feature to the collection of features that we may snap to.
+   * @param {import("../Feature.js").default} feature Feature.
+   * @param {boolean} [register] Whether to listen to the feature change or not
+   *     Defaults to `true`.
+   * @api
+   */
+  addFeature(feature, register) {
+    register = register !== void 0 ? register : true;
+    const feature_uid = getUid(feature);
+    const geometry = feature.getGeometry();
+    if (geometry) {
+      const segmenter2 = this.segmenters_[geometry.getType()];
+      if (segmenter2) {
+        this.indexedFeaturesExtents_[feature_uid] = geometry.getExtent(createEmpty());
+        const segments = segmenter2.call(
+          this.segmenters_,
+          geometry,
+          this.getMap().getView().getProjection()
+        );
+        let segmentCount = segments.length;
+        for (let i = 0; i < segmentCount; ++i) {
+          const segment = segments[i];
+          tempExtents[i] = boundingExtent(segment);
+          tempSegmentData[i] = {
+            feature,
+            segment
+          };
+        }
+        if (this.intersection_) {
+          for (let j = 0, jj = segments.length; j < jj; ++j) {
+            const segment = segments[j];
+            if (segment.length === 1) {
+              continue;
+            }
+            const extent = tempExtents[j];
+            for (let k = 0, kk = j - 1; k < kk; ++k) {
+              const otherSegment = segments[k];
+              if (otherSegment.length === 1 || !intersects(extent, tempExtents[k])) {
+                continue;
+              }
+              const intersection = getIntersectionPoint(segment, otherSegment);
+              if (!intersection) {
+                continue;
+              }
+              const intersectionSegment = [intersection];
+              tempExtents[segmentCount] = boundingExtent(intersectionSegment);
+              tempSegmentData[segmentCount++] = {
+                feature,
+                intersectionFeature: feature,
+                segment: intersectionSegment
+              };
+            }
+            const otherSegments = this.rBush_.getInExtent(tempExtents[j]);
+            for (let k = 0, kk = otherSegments.length; k < kk; ++k) {
+              const otherSegment = otherSegments[k].segment;
+              if (otherSegment.length === 1) {
+                continue;
+              }
+              const intersection = getIntersectionPoint(segment, otherSegment);
+              if (!intersection) {
+                continue;
+              }
+              const intersectionSegment = [intersection];
+              tempExtents[segmentCount] = boundingExtent(intersectionSegment);
+              tempSegmentData[segmentCount++] = {
+                feature,
+                intersectionFeature: otherSegments[k].feature,
+                segment: intersectionSegment
+              };
+            }
+          }
+        }
+        if (segmentCount === 1) {
+          this.rBush_.insert(tempExtents[0], tempSegmentData[0]);
+        } else {
+          tempExtents.length = segmentCount;
+          tempSegmentData.length = segmentCount;
+          this.rBush_.load(tempExtents, tempSegmentData);
+        }
+      }
+    }
+    if (register) {
+      if (this.featureChangeListenerKeys_[feature_uid]) {
+        unlistenByKey(this.featureChangeListenerKeys_[feature_uid]);
+      }
+      this.featureChangeListenerKeys_[feature_uid] = listen(
+        feature,
+        EventType_default.CHANGE,
+        this.handleFeatureChange_,
+        this
+      );
+    }
+  }
+  /**
+   * @return {import("../Collection.js").default<import("../Feature.js").default>|Array<import("../Feature.js").default>} Features.
+   * @private
+   */
+  getFeatures_() {
+    let features;
+    if (this.features_) {
+      features = this.features_;
+    } else if (this.source_) {
+      features = this.source_.getFeatures();
+    }
+    return features;
+  }
+  /**
+   * Checks if two snap data sets are equal.
+   * Compares the segment and the feature.
+   *
+   * @param {SnappedInfo} data1 The first snap data set.
+   * @param {SnappedInfo} data2 The second snap data set.
+   * @return {boolean} `true` if the data sets are equal, otherwise `false`.
+   * @private
+   */
+  areSnapDataEqual_(data1, data2) {
+    return data1.segment === data2.segment && data1.feature === data2.feature;
+  }
+  /**
+   * @param {import("../MapBrowserEvent.js").default} evt Map browser event.
+   * @return {boolean} `false` to stop event propagation.
+   * @api
+   * @override
+   */
+  handleEvent(evt) {
+    const result = this.snapTo(evt.pixel, evt.coordinate, evt.map);
+    if (result) {
+      evt.coordinate = result.vertex.slice(0, 2);
+      evt.pixel = result.vertexPixel;
+      if (this.snapped_ && !this.areSnapDataEqual_(this.snapped_, result)) {
+        this.dispatchEvent(new SnapEvent(SnapEventType.UNSNAP, this.snapped_));
+      }
+      this.snapped_ = {
+        vertex: evt.coordinate,
+        vertexPixel: evt.pixel,
+        feature: result.feature,
+        segment: result.segment
+      };
+      this.dispatchEvent(new SnapEvent(SnapEventType.SNAP, this.snapped_));
+    } else if (this.snapped_) {
+      this.dispatchEvent(new SnapEvent(SnapEventType.UNSNAP, this.snapped_));
+      this.snapped_ = null;
+    }
+    return super.handleEvent(evt);
+  }
+  /**
+   * @param {import("../source/Vector.js").VectorSourceEvent|import("../Collection.js").CollectionEvent<import("../Feature.js").default>} evt Event.
+   * @private
+   */
+  handleFeatureAdd_(evt) {
+    const feature = getFeatureFromEvent(evt);
+    if (feature) {
+      this.addFeature(feature);
+    }
+  }
+  /**
+   * @param {import("../source/Vector.js").VectorSourceEvent|import("../Collection.js").CollectionEvent<import("../Feature.js").default>} evt Event.
+   * @private
+   */
+  handleFeatureRemove_(evt) {
+    const feature = getFeatureFromEvent(evt);
+    if (feature) {
+      this.removeFeature(feature);
+      delete this.pendingFeatures_[getUid(feature)];
+    }
+  }
+  /**
+   * @param {import("../events/Event.js").default} evt Event.
+   * @private
+   */
+  handleFeatureChange_(evt) {
+    const feature = (
+      /** @type {import("../Feature.js").default} */
+      evt.target
+    );
+    if (this.handlingDownUpSequence) {
+      this.pendingFeatures_[getUid(feature)] = feature;
+    } else {
+      this.updateFeature_(feature);
+    }
+  }
+  /**
+   * Handle pointer up events.
+   * @param {import("../MapBrowserEvent.js").default} evt Event.
+   * @return {boolean} If the event was consumed.
+   * @override
+   */
+  handleUpEvent(evt) {
+    const featuresToUpdate = Object.values(this.pendingFeatures_);
+    if (featuresToUpdate.length) {
+      for (const feature of featuresToUpdate) {
+        this.updateFeature_(feature);
+      }
+      clear(this.pendingFeatures_);
+    }
+    return false;
+  }
+  /**
+   * Remove a feature from the collection of features that we may snap to.
+   * @param {import("../Feature.js").default} feature Feature
+   * @param {boolean} [unlisten] Whether to unlisten to the feature change
+   *     or not. Defaults to `true`.
+   * @api
+   */
+  removeFeature(feature, unlisten) {
+    const unregister = unlisten !== void 0 ? unlisten : true;
+    const feature_uid = getUid(feature);
+    const extent = this.indexedFeaturesExtents_[feature_uid];
+    if (extent) {
+      const rBush = this.rBush_;
+      rBush.getInExtent(extent).forEach((node) => {
+        if (feature === node.feature || feature === node.intersectionFeature) {
+          rBush.remove(node);
+        }
+      });
+    }
+    if (unregister) {
+      unlistenByKey(this.featureChangeListenerKeys_[feature_uid]);
+      delete this.featureChangeListenerKeys_[feature_uid];
+    }
+  }
+  /**
+   * Remove the interaction from its current map and attach it to the new map.
+   * Subclasses may set up event handlers to get notified about changes to
+   * the map here.
+   * @param {import("../Map.js").default} map Map.
+   * @override
+   */
+  setMap(map) {
+    const currentMap = this.getMap();
+    const keys = this.featuresListenerKeys_;
+    let features = this.getFeatures_();
+    if (!Array.isArray(features)) {
+      features = features.getArray();
+    }
+    if (currentMap) {
+      keys.forEach(unlistenByKey);
+      keys.length = 0;
+      this.rBush_.clear();
+      Object.values(this.featureChangeListenerKeys_).forEach(unlistenByKey);
+      this.featureChangeListenerKeys_ = {};
+    }
+    super.setMap(map);
+    if (map) {
+      if (this.features_) {
+        keys.push(
+          listen(
+            this.features_,
+            CollectionEventType_default.ADD,
+            this.handleFeatureAdd_,
+            this
+          ),
+          listen(
+            this.features_,
+            CollectionEventType_default.REMOVE,
+            this.handleFeatureRemove_,
+            this
+          )
+        );
+      } else if (this.source_) {
+        keys.push(
+          listen(
+            this.source_,
+            VectorEventType_default.ADDFEATURE,
+            this.handleFeatureAdd_,
+            this
+          ),
+          listen(
+            this.source_,
+            VectorEventType_default.REMOVEFEATURE,
+            this.handleFeatureRemove_,
+            this
+          )
+        );
+      }
+      for (const feature of features) {
+        this.addFeature(feature);
+      }
+    }
+  }
+  /**
+   * @param {import("../pixel.js").Pixel} pixel Pixel
+   * @param {import("../coordinate.js").Coordinate} pixelCoordinate Coordinate
+   * @param {import("../Map.js").default} map Map.
+   * @return {SnappedInfo|null} Snap result
+   */
+  snapTo(pixel, pixelCoordinate, map) {
+    const projection = map.getView().getProjection();
+    const projectedCoordinate = fromUserCoordinate(pixelCoordinate, projection);
+    const box = toUserExtent(
+      buffer(
+        boundingExtent([projectedCoordinate]),
+        map.getView().getResolution() * this.pixelTolerance_
+      ),
+      projection
+    );
+    const segments = this.rBush_.getInExtent(box);
+    const segmentsLength = segments.length;
+    if (segmentsLength === 0) {
+      return null;
+    }
+    let closestVertex;
+    let minSquaredDistance = Infinity;
+    let closestFeature;
+    let closestSegment = null;
+    const squaredPixelTolerance = this.pixelTolerance_ * this.pixelTolerance_;
+    const getResult = () => {
+      if (!closestVertex) {
+        return null;
+      }
+      const vertexPixel = map.getPixelFromCoordinate(closestVertex);
+      const squaredPixelDistance = squaredDistance2(pixel, vertexPixel);
+      if (squaredPixelDistance > squaredPixelTolerance) {
+        return null;
+      }
+      return {
+        vertex: closestVertex,
+        vertexPixel: [Math.round(vertexPixel[0]), Math.round(vertexPixel[1])],
+        feature: closestFeature,
+        segment: closestSegment
+      };
+    };
+    if (this.vertex_ || this.intersection_) {
+      for (let i = 0; i < segmentsLength; ++i) {
+        const segmentData = segments[i];
+        if (segmentData.feature.getGeometry().getType() !== "Circle") {
+          for (const vertex of segmentData.segment) {
+            const tempVertexCoord = fromUserCoordinate(vertex, projection);
+            const delta = squaredDistance2(projectedCoordinate, tempVertexCoord);
+            if (delta < minSquaredDistance && (this.intersection_ && segmentData.intersectionFeature || this.vertex_ && !segmentData.intersectionFeature)) {
+              closestVertex = vertex;
+              minSquaredDistance = delta;
+              closestFeature = segmentData.feature;
+            }
+          }
+        }
+      }
+      const result = getResult();
+      if (result) {
+        return result;
+      }
+    }
+    if (this.edge_) {
+      for (let i = 0; i < segmentsLength; ++i) {
+        let vertex = null;
+        const segmentData = segments[i];
+        if (segmentData.feature.getGeometry().getType() === "Circle") {
+          let circleGeometry = segmentData.feature.getGeometry();
+          const userProjection2 = getUserProjection();
+          if (userProjection2) {
+            circleGeometry = circleGeometry.clone().transform(userProjection2, projection);
+          }
+          vertex = closestOnCircle(
+            projectedCoordinate,
+            /** @type {import("../geom/Circle.js").default} */
+            circleGeometry
+          );
+        } else {
+          const [segmentStart, segmentEnd] = segmentData.segment;
+          if (segmentEnd) {
+            tempSegment2[0] = fromUserCoordinate(segmentStart, projection);
+            tempSegment2[1] = fromUserCoordinate(segmentEnd, projection);
+            vertex = closestOnSegment(projectedCoordinate, tempSegment2);
+          }
+        }
+        if (vertex) {
+          const delta = squaredDistance2(projectedCoordinate, vertex);
+          if (delta < minSquaredDistance) {
+            closestVertex = toUserCoordinate(vertex, projection);
+            closestSegment = segmentData.feature.getGeometry().getType() === "Circle" ? null : segmentData.segment;
+            minSquaredDistance = delta;
+            closestFeature = segmentData.feature;
+          }
+        }
+      }
+      const result = getResult();
+      if (result) {
+        return result;
+      }
+    }
+    return null;
+  }
+  /**
+   * @param {import("../Feature.js").default} feature Feature
+   * @private
+   */
+  updateFeature_(feature) {
+    this.removeFeature(feature, false);
+    this.addFeature(feature, false);
+  }
+};
+var Snap_default = Snap;
 
 // node_modules/ol/interaction/Translate.js
 var TranslateEventType = {
@@ -50651,6 +52576,42 @@ var Translate = class extends Pointer_default {
   }
 };
 var Translate_default = Translate;
+
+// js/draw.js
+var PENDING_COLOR = "#2563eb";
+var TYPES = /* @__PURE__ */ new Set(["Point", "LineString", "Polygon"]);
+function drawTypeFor(type) {
+  return TYPES.has(type) ? type : null;
+}
+var DrawLayer = class {
+  constructor() {
+    this.source = new Vector_default2({ wrapX: false });
+    this.layer = new Vector_default({
+      source: this.source,
+      // Above the shapes it is about to become one of, below the markers.
+      zIndex: 6,
+      style: pendingStyle()
+    });
+  }
+  clear() {
+    this.source.clear();
+  }
+  dispose() {
+    this.source.clear();
+  }
+};
+function pendingStyle() {
+  return new Style_default({
+    stroke: new Stroke_default({ color: PENDING_COLOR, width: 2, lineDash: [6, 5] }),
+    fill: new Fill_default({ color: [37, 99, 235, 0.08] }),
+    // A drawn Point has no stroke or fill to show.
+    image: new Circle_default({
+      radius: 5,
+      fill: new Fill_default({ color: PENDING_COLOR }),
+      stroke: new Stroke_default({ color: "rgba(255, 255, 255, 0.9)", width: 2 })
+    })
+  });
+}
 
 // node_modules/ol/vec/mat4.js
 function create2() {
@@ -57840,16 +59801,25 @@ var RoverMap = class {
     this.hasFitted = false;
     this.quietUntil = 0;
     this.listeners = {};
+    this.drawing = null;
     this.markerLayer = new MarkerLayer();
     this.shapeLayer = new ShapeLayer();
+    this.drawLayer = new DrawLayer();
     this.heatmapLayer = new HeatmapLayer();
     this.basemapLayer = new Tile_default3({ zIndex: 0, visible: false });
     this.map = new Map_default2({
       target: element,
+      // OpenLayers listens for keys on this element, and by default that is the
+      // viewport it builds *inside* the target. Nothing ever focuses that, so
+      // KeyboardPan and KeyboardZoom — both already in defaultInteractions() —
+      // were present and unreachable. The target is the element the component
+      // gives a tabindex, so a keydown on the focused map now reaches them.
+      keyboardEventTarget: element,
       layers: [
         this.basemapLayer,
         this.heatmapLayer.layer,
         this.shapeLayer.layer,
+        this.drawLayer.layer,
         this.markerLayer.layer
       ],
       controls: buildControls(this.config),
@@ -57864,6 +59834,7 @@ var RoverMap = class {
     });
     this.applyTiles(this.config.tiles);
     this.markerLayer.setClustering(this.config.cluster);
+    this.applyAccessibility(this.config);
     this.setupTooltip();
     this.setupEditing();
     this.setupDragging();
@@ -57876,7 +59847,7 @@ var RoverMap = class {
     this.maybeFit();
   }
   setShapes(shapes) {
-    this.shapeLayer.reconcile(shapes);
+    this.acceptShapes(shapes);
     this.maybeFit();
   }
   setHeatmap(heatmap) {
@@ -57894,9 +59865,28 @@ var RoverMap = class {
    */
   setContent({ markers, shapes, heatmap }) {
     if (heatmap !== void 0) this.heatmapLayer.reconcile(heatmap);
-    if (shapes !== void 0) this.shapeLayer.reconcile(shapes);
+    if (shapes !== void 0) this.acceptShapes(shapes);
     if (markers !== void 0) this.markerLayer.reconcile(markers);
     this.maybeFit();
+  }
+  /**
+   * Take a shape list from the server, and drop whatever was sketched.
+   *
+   * The two happen in one synchronous call, so when this is the update carrying
+   * the drawn shape the swap from pending sketch to real tracked shape is
+   * invisible — there is no frame in which the map shows both or neither.
+   *
+   * The clear is unconditional, which is the trade: any `:shapes` update drops a
+   * finished sketch, including one that arrived from somewhere else — a PubSub
+   * broadcast landing between `drawEnd` and the server's echo blanks the polygon
+   * until the round trip completes. Recognising *which* update carries the drawn
+   * shape would need an identity the client does not have, since assigning one is
+   * the whole thing the server does with a `drawEnd`. An unconditional clear is
+   * also what cleans up after a sketch the server refused.
+   */
+  acceptShapes(shapes) {
+    this.drawLayer.clear();
+    this.shapeLayer.reconcile(shapes);
   }
   setConfig(config) {
     const previous = this.config;
@@ -57908,6 +59898,9 @@ var RoverMap = class {
       this.applyControls(next);
     }
     if (previous.interactive !== next.interactive) this.applyInteractions(next);
+    if (previous.interactive !== next.interactive || previous.label !== next.label) {
+      this.applyAccessibility(next);
+    }
     if (changed(previous.cluster, next.cluster)) this.markerLayer.setClustering(next.cluster);
     const view = this.map.getView();
     if (previous.minZoom !== next.minZoom) view.setMinZoom(next.minZoom ?? 0);
@@ -58016,6 +60009,87 @@ var RoverMap = class {
     this.setupEditing();
     this.translate = null;
     this.setupDragging();
+    const type = this.drawing && this.drawing.type;
+    this.stopDrawing();
+    if (type && config.interactive !== false) this.armDrawing(type);
+  }
+  // -- drawing --------------------------------------------------------------
+  /**
+   * Arm the map for drawing, from `Rover.start_drawing/3`.
+   *
+   * A locked map refuses: `interactive={false}` withholds every other pointer
+   * gesture, and a drawing mode is the largest of them.
+   */
+  startDrawing({ type }) {
+    if (this.config.interactive === false) return;
+    const geometryType = drawTypeFor(type);
+    if (!geometryType) {
+      console.error(`[rover] cannot draw ${JSON.stringify(type)} \u2014 expected Point, LineString or Polygon`);
+      return;
+    }
+    this.stopDrawing();
+    this.armDrawing(geometryType);
+  }
+  armDrawing(type) {
+    this.drawing = { type };
+    if (!this.wants("drawEnd")) {
+      console.error("[rover] drawing was armed with no on_draw_end handler \u2014 the shape drawn will go nowhere");
+    }
+    this.draw = new Draw_default({ source: this.drawLayer.source, type });
+    this.draw.on("drawend", (event) => {
+      const geometry = format.writeGeometryObject(event.feature.getGeometry(), {
+        decimals: 7
+      });
+      this.emit("drawEnd", { type: geometry.type, geometry });
+    });
+    this.map.addInteraction(this.draw);
+    this.snap = new Snap_default({ source: this.shapeLayer.source, pixelTolerance: HIT_TOLERANCE });
+    this.map.addInteraction(this.snap);
+    this.onDrawKeydown = (event) => {
+      if (event.key !== "Escape" || !this.draw) return;
+      if (isTextEntry(event.target)) return;
+      this.draw.abortDrawing();
+    };
+    document.addEventListener("keydown", this.onDrawKeydown);
+    this.element.classList.add("rover-map__canvas--drawing");
+  }
+  /** Disarm, from `Rover.stop_drawing/2` — and discard the sketch with the mode. */
+  stopDrawing() {
+    if (this.draw) {
+      this.map.removeInteraction(this.draw);
+      this.draw.dispose();
+      this.draw = null;
+    }
+    if (this.snap) {
+      this.map.removeInteraction(this.snap);
+      this.snap.dispose();
+      this.snap = null;
+    }
+    if (this.onDrawKeydown) {
+      document.removeEventListener("keydown", this.onDrawKeydown);
+      this.onDrawKeydown = null;
+    }
+    this.drawLayer.clear();
+    this.drawing = null;
+    this.element.classList.remove("rover-map__canvas--drawing");
+  }
+  /**
+   * The map element's accessible name, and whether it is in the tab order.
+   *
+   * Applied from here rather than left to the server's markup, because the
+   * element is `phx-update="ignore"` — and LiveView merges only `data-*`
+   * attributes onto an ignored element (`mergeAttrs`, `isIgnored`). The server's
+   * rendering is the first paint; every change after it has to come through the
+   * config, or a map that locks itself stays a focusable `role="application"`
+   * nobody can do anything with.
+   */
+  applyAccessibility(config) {
+    if (config.label) this.element.setAttribute("aria-label", config.label);
+    if (config.interactive === false) {
+      this.element.removeAttribute("tabindex");
+    } else {
+      this.element.setAttribute("tabindex", "0");
+    }
   }
   // -- interaction ----------------------------------------------------------
   setupTooltip() {
@@ -58096,6 +60170,7 @@ var RoverMap = class {
   setupEvents() {
     this.map.on("pointermove", (event) => {
       if (this.config.interactive === false) return;
+      if (this.drawing) return this.hideTooltip();
       if (event.dragging) return this.hideTooltip();
       const { marker, cluster, markerFeature, shape } = this.featureAt(event.pixel);
       const clickableShape = shape && this.wants("shapeClick");
@@ -58113,6 +60188,7 @@ var RoverMap = class {
     this.map.getViewport().addEventListener("pointerleave", () => this.hideTooltip());
     this.map.on("singleclick", (event) => {
       if (this.config.interactive === false) return;
+      if (this.drawing) return;
       const { marker, cluster, markerFeature, shape } = this.featureAt(event.pixel);
       const { lat, lon } = unproject(event.coordinate);
       if (cluster) {
@@ -58196,6 +60272,38 @@ var RoverMap = class {
       duration: ANIMATION_MS
     });
   }
+  /**
+   * Do to a feature what a click on it would do, named rather than pointed at.
+   *
+   * The keyboard's way in. `<.map>` renders one hidden button per marker and
+   * shape, carrying `marker:<id>` or `shape:<id>`; pressing one lands here, and
+   * from here on it is the same path as a pointer click — the same payload to the
+   * server, the same popup opened by the same subscriber.
+   */
+  activate(key) {
+    if (this.config.interactive === false) return;
+    const target = parseFocusKey(key);
+    if (!target) return;
+    if (target.kind === "marker") {
+      const marker = this.markerLayer.markerById(target.id);
+      if (!marker) return;
+      this.emit("markerClick", {
+        id: marker.id,
+        lat: marker.lat,
+        lon: marker.lon,
+        data: marker.data ?? null
+      });
+      return;
+    }
+    const entry = this.shapeLayer.entries.get(target.id);
+    if (!entry || !this.wants("shapeClick")) return;
+    if (entry.features.length === 0) return;
+    const extent = createEmpty();
+    entry.features.forEach((feature) => extend(extent, feature.getGeometry().getExtent()));
+    const [minX, minY, maxX, maxY] = extent;
+    const { lat, lon } = unproject([(minX + maxX) / 2, (minY + maxY) / 2]);
+    this.emit("shapeClick", { id: entry.shape.id, lat, lon, data: entry.shape.data ?? null });
+  }
   featureAt(pixel) {
     let marker = null;
     let shape = null;
@@ -58243,7 +60351,9 @@ var RoverMap = class {
   }
   destroy() {
     if (this.resizeObserver) this.resizeObserver.disconnect();
+    this.stopDrawing();
     this.markerLayer.dispose();
+    this.drawLayer.dispose();
     this.shapeLayer.dispose();
     this.heatmapLayer.dispose();
     this.map.setTarget(void 0);
@@ -58311,6 +60421,19 @@ function fitMaxZoom(config, hasShapes) {
   const tileMax = config.tiles && config.tiles.maxZoom || 19;
   return hasShapes ? tileMax : Math.min(tileMax, 16);
 }
+function isTextEntry(target) {
+  if (!target || !target.tagName) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+function parseFocusKey(key) {
+  if (typeof key !== "string") return null;
+  const at = key.indexOf(":");
+  if (at < 1) return null;
+  const kind = key.slice(0, at);
+  const id = key.slice(at + 1);
+  if (kind !== "marker" && kind !== "shape" || id === "") return null;
+  return { kind, id };
+}
 function sameCenter(a, b) {
   return Boolean(a) && Boolean(b) && a[0] === b[0] && a[1] === b[1];
 }
@@ -58345,12 +60468,23 @@ var Rover = {
       markers: parse2(this.markersJson, [], "data-rover-markers")
     });
     this.popups = new Popups(this.el, this.map);
+    this.onIndexClick = (event) => {
+      const button = event.target.closest && event.target.closest("[data-rover-focus]");
+      if (button && this.map) this.map.activate(button.dataset.roverFocus);
+    };
+    this.el.addEventListener("click", this.onIndexClick);
     this.el._rover = this.map;
     this.handleEvent("rover:fly_to", (payload) => {
       if (this.mine(payload)) this.map.flyTo(payload);
     });
     this.handleEvent("rover:fit_to", (payload) => {
       if (this.mine(payload)) this.map.fitTo(payload);
+    });
+    this.handleEvent("rover:start_drawing", (payload) => {
+      if (this.mine(payload)) this.map.startDrawing(payload);
+    });
+    this.handleEvent("rover:stop_drawing", (payload) => {
+      if (this.mine(payload)) this.map.stopDrawing();
     });
   },
   mine(payload) {
@@ -58386,6 +60520,7 @@ var Rover = {
     if (this.popups) this.popups.refresh();
   },
   destroyed() {
+    this.el.removeEventListener("click", this.onIndexClick);
     if (this.popups) this.popups.destroy();
     if (this.map) this.map.destroy();
     this.popups = null;
@@ -58415,6 +60550,7 @@ function parse2(json, fallback, attribute) {
 // js/index.js
 var index_default = RoverHooks;
 export {
+  DrawLayer,
   HeatmapLayer,
   MarkerLayer,
   Rover,

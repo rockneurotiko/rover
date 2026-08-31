@@ -11,12 +11,15 @@ import Rotate from "ol/control/Rotate.js"
 import ScaleLine from "ol/control/ScaleLine.js"
 import Zoom from "ol/control/Zoom.js"
 import { never } from "ol/events/condition.js"
+import Draw from "ol/interaction/Draw.js"
 import Modify from "ol/interaction/Modify.js"
+import Snap from "ol/interaction/Snap.js"
 import Translate from "ol/interaction/Translate.js"
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js"
 import { createEmpty, extend } from "ol/extent.js"
 
 import { extentToBbox, project, unproject } from "./coords.js"
+import { DrawLayer, drawTypeFor } from "./draw.js"
 import { HeatmapLayer } from "./heatmap.js"
 import { MarkerLayer } from "./markers.js"
 import { ShapeLayer, format as geoJsonFormat } from "./shapes.js"
@@ -43,8 +46,14 @@ export class RoverMap {
     // server has no part to play in it.
     this.listeners = {}
 
+    // What `Rover.start_drawing/3` armed, or null. Held rather than inferred from
+    // the interaction, because `applyInteractions` throws every interaction away
+    // and needs to know whether to arm a new one afterwards.
+    this.drawing = null
+
     this.markerLayer = new MarkerLayer()
     this.shapeLayer = new ShapeLayer()
+    this.drawLayer = new DrawLayer()
     this.heatmapLayer = new HeatmapLayer()
     // A placeholder occupying slot 0 until the first applyTiles() call below
     // replaces it. The basemap can be a raster ol/layer/Tile or a vector
@@ -55,10 +64,17 @@ export class RoverMap {
 
     this.map = new Map({
       target: element,
+      // OpenLayers listens for keys on this element, and by default that is the
+      // viewport it builds *inside* the target. Nothing ever focuses that, so
+      // KeyboardPan and KeyboardZoom — both already in defaultInteractions() —
+      // were present and unreachable. The target is the element the component
+      // gives a tabindex, so a keydown on the focused map now reaches them.
+      keyboardEventTarget: element,
       layers: [
         this.basemapLayer,
         this.heatmapLayer.layer,
         this.shapeLayer.layer,
+        this.drawLayer.layer,
         this.markerLayer.layer,
       ],
       controls: buildControls(this.config),
@@ -74,6 +90,7 @@ export class RoverMap {
 
     this.applyTiles(this.config.tiles)
     this.markerLayer.setClustering(this.config.cluster)
+    this.applyAccessibility(this.config)
 
     this.setupTooltip()
     // Editing before dragging: OpenLayers checks the most-recently-added
@@ -94,7 +111,7 @@ export class RoverMap {
   }
 
   setShapes(shapes) {
-    this.shapeLayer.reconcile(shapes)
+    this.acceptShapes(shapes)
     this.maybeFit()
   }
 
@@ -114,9 +131,29 @@ export class RoverMap {
    */
   setContent({ markers, shapes, heatmap }) {
     if (heatmap !== undefined) this.heatmapLayer.reconcile(heatmap)
-    if (shapes !== undefined) this.shapeLayer.reconcile(shapes)
+    if (shapes !== undefined) this.acceptShapes(shapes)
     if (markers !== undefined) this.markerLayer.reconcile(markers)
     this.maybeFit()
+  }
+
+  /**
+   * Take a shape list from the server, and drop whatever was sketched.
+   *
+   * The two happen in one synchronous call, so when this is the update carrying
+   * the drawn shape the swap from pending sketch to real tracked shape is
+   * invisible — there is no frame in which the map shows both or neither.
+   *
+   * The clear is unconditional, which is the trade: any `:shapes` update drops a
+   * finished sketch, including one that arrived from somewhere else — a PubSub
+   * broadcast landing between `drawEnd` and the server's echo blanks the polygon
+   * until the round trip completes. Recognising *which* update carries the drawn
+   * shape would need an identity the client does not have, since assigning one is
+   * the whole thing the server does with a `drawEnd`. An unconditional clear is
+   * also what cleans up after a sketch the server refused.
+   */
+  acceptShapes(shapes) {
+    this.drawLayer.clear()
+    this.shapeLayer.reconcile(shapes)
   }
 
   setConfig(config) {
@@ -137,6 +174,10 @@ export class RoverMap {
     }
 
     if (previous.interactive !== next.interactive) this.applyInteractions(next)
+
+    if (previous.interactive !== next.interactive || previous.label !== next.label) {
+      this.applyAccessibility(next)
+    }
 
     if (changed(previous.cluster, next.cluster)) this.markerLayer.setClustering(next.cluster)
 
@@ -276,6 +317,142 @@ export class RoverMap {
 
     this.translate = null
     this.setupDragging()
+
+    // Draw and Snap went out with the rest, and need disposing for the same
+    // reason Modify above does. A map that has just been locked is a picture, so
+    // stopDrawing() below cancels an armed drawing outright rather than
+    // remembering it across the toggle.
+    //
+    // Nothing re-arms on the LiveView path: `interactive` is a boolean attribute,
+    // so this method only runs on a transition, and the only transition that can
+    // find a drawing armed is the one into a locked map. The re-arm is for a
+    // caller driving `setConfig` from JavaScript, where an unset `interactive`
+    // can turn into `true` with the mode still on.
+    const type = this.drawing && this.drawing.type
+    this.stopDrawing()
+    if (type && config.interactive !== false) this.armDrawing(type)
+  }
+
+  // -- drawing --------------------------------------------------------------
+
+  /**
+   * Arm the map for drawing, from `Rover.start_drawing/3`.
+   *
+   * A locked map refuses: `interactive={false}` withholds every other pointer
+   * gesture, and a drawing mode is the largest of them.
+   */
+  startDrawing({ type }) {
+    if (this.config.interactive === false) return
+
+    const geometryType = drawTypeFor(type)
+
+    if (!geometryType) {
+      console.error(`[rover] cannot draw ${JSON.stringify(type)} — expected Point, LineString or Polygon`)
+      return
+    }
+
+    // Re-arming with a different type replaces the mode rather than stacking a
+    // second Draw beside the first, which would put two vertices down per click.
+    this.stopDrawing()
+    this.armDrawing(geometryType)
+  }
+
+  armDrawing(type) {
+    this.drawing = { type }
+
+    // Nothing is listening, so every finished sketch will sit in the scratch
+    // layer forever: `acceptShapes` is the only thing that clears it, and it runs
+    // on a `:shapes` update that can now never come. Say so rather than let the
+    // map fill up with dashed phantoms.
+    if (!this.wants("drawEnd")) {
+      console.error("[rover] drawing was armed with no on_draw_end handler — the shape drawn will go nowhere")
+    }
+
+    this.draw = new Draw({ source: this.drawLayer.source, type })
+
+    this.draw.on("drawend", (event) => {
+      // Same precision as an edited shape, for the same reason: about a
+      // centimetre, rather than the ~15 significant digits a raw Mercator round
+      // trip produces.
+      const geometry = geoJsonFormat.writeGeometryObject(event.feature.getGeometry(), {
+        decimals: 7,
+      })
+
+      // No id: the shape does not exist yet, and identity is the server's to
+      // assign when it turns this into a `Rover.Shape`.
+      this.emit("drawEnd", { type: geometry.type, geometry })
+    })
+
+    this.map.addInteraction(this.draw)
+
+    // Snap last. OpenLayers runs interactions in reverse-add order, so this one
+    // sees the pointer event before Draw does — which is the only order in which
+    // it can move the point onto an existing vertex or edge. Snapping to the
+    // shape layer is what lets a new parcel share a border with the one next to
+    // it instead of leaving a sliver.
+    this.snap = new Snap({ source: this.shapeLayer.source, pixelTolerance: HIT_TOLERANCE })
+    this.map.addInteraction(this.snap)
+
+    // Escape abandons the sketch in progress without disarming the mode, the way
+    // it does in every drawing tool. The server is not told: it armed a mode, and
+    // the mode is still armed.
+    // Bound to the document, the way a drawing tool binds it — a sketch is
+    // abandoned from wherever the pointer happens to be. The one Escape that is
+    // plainly not aimed at the map is the one dismissing what the user is typing
+    // into.
+    this.onDrawKeydown = (event) => {
+      if (event.key !== "Escape" || !this.draw) return
+      if (isTextEntry(event.target)) return
+
+      this.draw.abortDrawing()
+    }
+    document.addEventListener("keydown", this.onDrawKeydown)
+
+    this.element.classList.add("rover-map__canvas--drawing")
+  }
+
+  /** Disarm, from `Rover.stop_drawing/2` — and discard the sketch with the mode. */
+  stopDrawing() {
+    if (this.draw) {
+      this.map.removeInteraction(this.draw)
+      this.draw.dispose()
+      this.draw = null
+    }
+
+    if (this.snap) {
+      this.map.removeInteraction(this.snap)
+      this.snap.dispose()
+      this.snap = null
+    }
+
+    if (this.onDrawKeydown) {
+      document.removeEventListener("keydown", this.onDrawKeydown)
+      this.onDrawKeydown = null
+    }
+
+    this.drawLayer.clear()
+    this.drawing = null
+    this.element.classList.remove("rover-map__canvas--drawing")
+  }
+
+  /**
+   * The map element's accessible name, and whether it is in the tab order.
+   *
+   * Applied from here rather than left to the server's markup, because the
+   * element is `phx-update="ignore"` — and LiveView merges only `data-*`
+   * attributes onto an ignored element (`mergeAttrs`, `isIgnored`). The server's
+   * rendering is the first paint; every change after it has to come through the
+   * config, or a map that locks itself stays a focusable `role="application"`
+   * nobody can do anything with.
+   */
+  applyAccessibility(config) {
+    if (config.label) this.element.setAttribute("aria-label", config.label)
+
+    if (config.interactive === false) {
+      this.element.removeAttribute("tabindex")
+    } else {
+      this.element.setAttribute("tabindex", "0")
+    }
   }
 
   // -- interaction ----------------------------------------------------------
@@ -385,6 +562,9 @@ export class RoverMap {
   setupEvents() {
     this.map.on("pointermove", (event) => {
       if (this.config.interactive === false) return
+      // While drawing, the pointer is a pen: a tooltip following it would cover
+      // the vertex being placed, and the crosshair is the cursor that belongs.
+      if (this.drawing) return this.hideTooltip()
       if (event.dragging) return this.hideTooltip()
 
       const { marker, cluster, markerFeature, shape } = this.featureAt(event.pixel)
@@ -410,6 +590,13 @@ export class RoverMap {
 
     this.map.on("singleclick", (event) => {
       if (this.config.interactive === false) return
+      // A click that places a vertex is not a click on anything. Every click
+      // event goes, not just `mapClick`: markers, shapes and clusters are the
+      // things a user traces *around*, and claiming their clicks would open a
+      // popup or zoom into a group under the polygon being drawn. The mapClick
+      // case is the one that bites hardest — Popups listens for it, so without
+      // this every corner of a polygon also dismissed whatever was open.
+      if (this.drawing) return
 
       const { marker, cluster, markerFeature, shape } = this.featureAt(event.pixel)
       const { lat, lon } = unproject(event.coordinate)
@@ -513,6 +700,62 @@ export class RoverMap {
     })
   }
 
+  /**
+   * Do to a feature what a click on it would do, named rather than pointed at.
+   *
+   * The keyboard's way in. `<.map>` renders one hidden button per marker and
+   * shape, carrying `marker:<id>` or `shape:<id>`; pressing one lands here, and
+   * from here on it is the same path as a pointer click — the same payload to the
+   * server, the same popup opened by the same subscriber.
+   */
+  activate(key) {
+    // A locked map is a picture. The component withholds the buttons entirely,
+    // so this is for the map that locks itself after they were rendered.
+    if (this.config.interactive === false) return
+
+    const target = parseFocusKey(key)
+    if (!target) return
+
+    if (target.kind === "marker") {
+      // markerById, not markerFor(featureById): a marker OpenLayers has grouped
+      // into a cluster has no rendered feature of its own, so featureById gives
+      // null for it — and clustering is the documented answer to hundreds of
+      // markers, which is exactly when a keyboard needs this list most. The
+      // marker is reachable whether or not it is currently drawn on its own.
+      const marker = this.markerLayer.markerById(target.id)
+      if (!marker) return
+
+      this.emit("markerClick", {
+        id: marker.id,
+        lat: marker.lat,
+        lon: marker.lon,
+        data: marker.data ?? null,
+      })
+
+      return
+    }
+
+    const entry = this.shapeLayer.entries.get(target.id)
+    if (!entry || !this.wants("shapeClick")) return
+
+    // An unreadable geometry is logged and rendered as no features at all, and
+    // the button for it is rendered anyway — the server has no way to know. There
+    // is nothing to point at, so there is nothing to do.
+    if (entry.features.length === 0) return
+
+    // A pointer click anchors a shape's popup where the pointer was; a keyboard
+    // has no such point, so the centre of the whole shape's extent is the honest
+    // answer — inside its bounding box, and where "this shape" is. Every feature,
+    // not just the first: a FeatureCollection is one shape.
+    const extent = createEmpty()
+    entry.features.forEach((feature) => extend(extent, feature.getGeometry().getExtent()))
+
+    const [minX, minY, maxX, maxY] = extent
+    const { lat, lon } = unproject([(minX + maxX) / 2, (minY + maxY) / 2])
+
+    this.emit("shapeClick", { id: entry.shape.id, lat, lon, data: entry.shape.data ?? null })
+  }
+
   featureAt(pixel) {
     let marker = null
     let shape = null
@@ -574,7 +817,9 @@ export class RoverMap {
 
   destroy() {
     if (this.resizeObserver) this.resizeObserver.disconnect()
+    this.stopDrawing()
     this.markerLayer.dispose()
+    this.drawLayer.dispose()
     this.shapeLayer.dispose()
     this.heatmapLayer.dispose()
     this.map.setTarget(undefined)
@@ -712,6 +957,42 @@ export function fitMaxZoom(config, hasShapes) {
   const tileMax = (config.tiles && config.tiles.maxZoom) || 19
 
   return hasShapes ? tileMax : Math.min(tileMax, 16)
+}
+
+/**
+ * Is an Escape aimed at what the user is typing into, rather than at the map?
+ *
+ * Exported so the one case that matters can be asserted without a form, a map and
+ * a half-traced polygon on the same page.
+ */
+export function isTextEntry(target) {
+  if (!target || !target.tagName) return false
+
+  return (
+    target.isContentEditable ||
+    ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+  )
+}
+
+/**
+ * Split a `marker:<id>` / `shape:<id>` focus key.
+ *
+ * Split on the *first* colon only: ids are application data, and a slug or a URN
+ * with a colon in it would otherwise be truncated into a different marker's id —
+ * or into one that does not exist.
+ */
+export function parseFocusKey(key) {
+  if (typeof key !== "string") return null
+
+  const at = key.indexOf(":")
+  if (at < 1) return null
+
+  const kind = key.slice(0, at)
+  const id = key.slice(at + 1)
+
+  if ((kind !== "marker" && kind !== "shape") || id === "") return null
+
+  return { kind, id }
 }
 
 function sameCenter(a, b) {

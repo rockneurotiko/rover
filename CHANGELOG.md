@@ -17,11 +17,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or self-hosted. `carto_api_key` config and the per-call `key:` opt apply to
   the three vector presets exactly as they already do to their raster
   counterparts.
+
+## [0.6.0] - 2026-08-31
+
+### Added
+
 - **Carto API key support** on `:carto_light`, `:carto_dark`, and
   `:carto_voyager`, which Carto now requires. Configure a default with
   `config :rover, Rover.Tiles, carto_api_key: "..."`, or pass
   `tiles={{:carto_dark, key: "..."}}` per call to override it. Presets
-  without a key configured or passed are unaffected.
+  without a key configured or passed are unaffected. Carto is retiring these
+  raster endpoints for vector tiles; Rover's basemap layer stays raster-only
+  for now.
+
+## [0.5.0] - 2026-08-31
+
+### Added
+
+- **Drawing new shapes**: `Rover.start_drawing/3`, `Rover.stop_drawing/2` and
+  `on_draw_end`. The other half of 0.4.0's `:editable`, which could only reshape
+  a geometry that already existed. Deliberately a mode rather than an attribute —
+  there is no shape yet to hang a per-item flag on, and an always-armed
+  `ol/interaction/Draw` would swallow every ordinary map and shape click — so it
+  is a one-shot command in the shape of `fly_to/4`. `on_draw_end` is the only
+  event with no `"id"`: the shape does not exist until the server makes one, so
+  identity is the server's to assign.
+
+  The sketch is drawn into a **separate scratch source**, never into
+  `ShapeLayer`'s own. A feature `Draw` put there would be absent from the
+  `entries` map `reconcile/1` tracks, so the server's echo of the new shape would
+  render a second feature beside it and the polygon would appear twice. The
+  scratch layer is cleared by the same call that applies a new `:shapes` list, so
+  the handover is invisible on the accepted path and is the cleanup on the
+  abandoned one.
+
+  `:type` is `:polygon`, `:line` or `:point`. There is no `:circle`: OpenLayers
+  draws one, GeoJSON cannot represent one, and it could never round-trip through
+  `Rover.Shape`. Escape abandons the sketch in progress and leaves the mode
+  armed; new points snap to the shapes already on the map; a map with
+  `interactive={false}` refuses to arm, and locking one mid-draw cancels the
+  mode rather than remembering it.
+
+  While the mode is armed the map does not report clicks or tooltips of its own:
+  a click that places a vertex is not a click on the map, and reporting it would
+  fire `on_map_click` once per corner — dismissing any open popup each time,
+  since the popup layer listens for exactly that.
+- **A keyboard and screen-reader pass.** A map was a canvas with nothing
+  focusable in it and no accessible name, so everything on one was unreachable
+  without a mouse.
+
+  The map itself now carries `tabindex="0"` and `role="application"`, and
+  OpenLayers' `keyboardEventTarget` is pointed at the element the component gives
+  that tabindex to. `KeyboardPan` and `KeyboardZoom` were in
+  `defaultInteractions()` from the start — present, and unreachable, because
+  nothing ever focused the viewport they listened on.
+
+  Every marker and shape a click can do something with is rendered as a
+  visually-hidden button, which is the only DOM a keyboard or a screen reader can
+  reach a painted feature through. Pressing one takes the same path as a pointer
+  click: the same payload to the server, the same popup opened by the same
+  subscriber. Features that are pure scenery — no handler, no popup — get no
+  button, because a tab stop that does nothing when pressed is worse than none.
+
+  Popups became `role="dialog"`, named after their feature. One opened from the
+  keyboard takes focus and hands it back to the button on close; one opened by a
+  pointer does neither, since a mouse user's attention is already where they
+  clicked.
+
+  New `label` attribute for the accessible name, defaulting to `"Map"`. The
+  canvas's `aria-label` and `tabindex` are re-applied by the client on every
+  config change, because the element is `phx-update="ignore"` and LiveView merges
+  only `data-*` attributes onto one of those — a map that locked itself would
+  otherwise stay a focusable `role="application"` with nothing behind it.
+
+- **Dialyzer in CI**, and `mix dialyzer` locally. The public API is annotated
+  with `@spec` end to end and nothing ever checked those annotations against the
+  code. The PLT is written to `_build/plts`, so the `_build` cache CI already
+  keeps carries it; `:missing_return` and `:extra_return` are on, because a
+  `@spec` that has drifted from its function is the thing worth catching.
+- **A coverage floor.** `mix test --cover` now fails below the threshold declared
+  in `mix.exs`, and the lint row of the CI matrix runs it. The floor is a
+  ratchet: raise it when a release lands above it, never lower it to make a red
+  run green.
+
+### Removed
+
+- A `Rover.Shape` fallback clause that could not be reached — every caller of the
+  private `get/2` is already inside an `is_map/1` guard. Dialyzer's first find.
 
 ## [0.4.0] - 2026-08-12
 
@@ -342,6 +424,9 @@ them.
   back as strings and will not match.
 - `fit` governs *re*fitting; the initial framing is separate.
 
+[0.6.0]: https://github.com/nseaSeb/rover/releases/tag/v0.6.0
+[0.5.0]: https://github.com/nseaSeb/rover/releases/tag/v0.5.0
+[0.4.0]: https://github.com/nseaSeb/rover/releases/tag/v0.4.0
 [0.3.2]: https://github.com/nseaSeb/rover/releases/tag/v0.3.2
 [0.3.1]: https://github.com/nseaSeb/rover/releases/tag/v0.3.1
 [0.3.0]: https://github.com/nseaSeb/rover/releases/tag/v0.3.0

@@ -57,7 +57,7 @@ is somewhere else entirely.
 
 ```elixir
 def deps do
-  [{:rover, "~> 0.4"}]
+  [{:rover, "~> 0.6"}]
 end
 ```
 
@@ -213,6 +213,60 @@ What snaps the shape back to the server's truth is bumping `:rev` (the default
 changes; rejecting an edit means the geometry does *not* change, so `:rev` has
 to be bumped some other way, deliberately).
 
+### Letting the user draw a new one
+
+`:editable` reshapes a geometry that already exists. Drawing is the other half,
+and it is a **mode** rather than an attribute — there is no shape yet to hang a
+flag on, so the server arms the map for a gesture the way `fly_to` moves it:
+
+```elixir
+def handle_event("draw_parcel", _params, socket) do
+  {:noreply, Rover.start_drawing(socket, "parcels", type: :polygon)}
+end
+```
+
+```heex
+<.map id="parcels" shapes={@parcels} on_draw_end="drew" />
+```
+
+```elixir
+def handle_event("drew", %{"type" => _type, "geometry" => geometry}, socket) do
+  parcel = %{id: System.unique_integer([:positive]), geometry: geometry, editable: true}
+
+  {:noreply,
+   socket
+   |> assign(parcels: socket.assigns.parcels ++ [parcel])
+   |> Rover.stop_drawing("parcels")}
+end
+```
+
+`on_draw_end` is the one event with no `"id"`: the shape does not exist until
+you make one, so naming it is yours to do — the same way it would be for a row
+you are about to insert.
+
+Four things worth knowing:
+
+* **The mode stays armed** until `Rover.stop_drawing/2`. A user asked to trace
+  four parcels traces four without going back to the toolbar. Drop the
+  `stop_drawing` above if that is what you want.
+* **Escape abandons the sketch in progress** and leaves the mode armed, the way
+  it does in every drawing tool. The server is not told: it armed a mode, and
+  the mode is still armed.
+* **`:type` is `:polygon`, `:line` or `:point`.** There is no `:circle` —
+  OpenLayers can draw one, GeoJSON has no way to represent one, and a shape that
+  cannot round-trip through `Rover.Shape` is one the server could never store or
+  send back.
+* **New points snap to the shapes already on the map**, so a parcel traced
+  against its neighbour shares that border instead of leaving a sliver.
+* **While the mode is armed the map claims every click.** Not just
+  `on_map_click`: markers, shapes and clusters stop answering too, popups
+  included, because a click that places a vertex is not a click on the thing
+  underneath it. Since the mode persists until you stop it, leaving it armed
+  leaves the map's other click behaviour off with it.
+
+A map rendered with `interactive={false}` refuses to arm, and locking one that
+is already drawing cancels the mode outright rather than remembering it.
+
 ### Geometry is diffed by revision, not by hashing
 
 Markers hash their coordinate — two numbers. A route is thousands of points, so
@@ -314,6 +368,39 @@ patching markup it no longer owns. Rover leaves the nodes where HEEx put them an
 positions them itself. The cost is one DOM node per marker — fine for dozens,
 which is why clustering rather than popups is the answer to hundreds.
 
+## Keyboard and screen readers
+
+A map is a canvas, and a canvas has no DOM: without help, everything on a Rover
+map is unreachable to anyone not holding a mouse. Three things close that, and
+they are on by default.
+
+**The map takes focus.** It carries `tabindex="0"` and `role="application"`, so
+Tab reaches it and the arrow keys pan it, `+` and `-` zoom it. OpenLayers has
+shipped `KeyboardPan` and `KeyboardZoom` all along; nothing could focus the map,
+so nothing could reach them.
+
+**Every marker and shape gets a button.** Rover renders one visually-hidden
+button per feature — the only DOM a keyboard or a screen reader can reach a
+painted marker through. Each shows itself when it takes focus, and pressing it
+does exactly what clicking the marker does: the same event to your LiveView, the
+same popup opened. The list is rendered only when something is listening, so a
+map that is pure scenery does not grow a tab stop per pin.
+
+**Popups are dialogs, and they manage focus.** Each is `role="dialog"`, named
+after its marker. A popup opened from the keyboard takes focus and hands it back
+to the button on close; a popup opened by a mouse click does neither, because a
+pointer user's attention is already where they clicked.
+
+Name your maps — the accessible name defaults to the word `Map`, which is enough
+for one map on a page and not enough for two:
+
+```heex
+<.map id="clients" label="Client sites" markers={@clients} on_marker_click="select" />
+```
+
+A button is named by the marker's `:label`, falling back to its `:tooltip`, then
+to `Marker <id>` — poor, but addressable, which no name at all is not.
+
 ## Moving the view without owning it
 
 `center` and `zoom` are attributes, which is right when the view *is* a property of
@@ -394,6 +481,23 @@ config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
 <.map id="m" tiles={{:carto_dark, key: "YOUR_KEY"}} ... />
 <.map id="m" tiles={{:carto_dark_vector, key: "YOUR_KEY"}} ... />
 ```
+
+Carto now requires an API key on `:carto_light`, `:carto_dark`, and
+`:carto_voyager`:
+
+```elixir
+# config.exs — applies to every carto_* preset
+config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
+```
+
+```heex
+<%!-- or per call, which overrides the configured default --%>
+<.map id="m" tiles={{:carto_dark, key: "YOUR_KEY"}} ... />
+```
+
+Carto is also retiring these raster endpoints for vector tiles; Rover's
+OpenLayers basemap layer is raster-only today, so treat the Carto presets as a
+transitional option rather than a long-term one.
 
 ## What "only update what changed" actually means
 
@@ -479,8 +583,14 @@ mix deps.get
 mix assets.build      # npm install + esbuild the bundles
 mix dev               # playground on http://localhost:4020
 mix precommit         # format, compile --warnings-as-errors, both test suites
+mix test --cover      # the suite, plus the coverage floor CI enforces
+mix dialyzer          # checks the @specs; the first run builds the PLT
 mix assets.test.browser   # the browser suite, in a real Chromium
+bin/ci                # every check CI runs, in a container, on your working tree
 ```
+
+`mix precommit` stays fast on purpose, so the two slow checks — Dialyzer and the
+browser suite — live in CI and in `bin/ci` rather than in front of every commit.
 
 The browser suite is small on purpose. Everything below the component — the
 canvas, the popup DOM, the tile URLs the browser actually requests — lives where
@@ -494,9 +604,9 @@ and a log of the events coming back. There is no OpenLayers in that file.
 
 ## Status
 
-Markers, GeoJSON shapes, emoji, popups, clustering, heatmaps, imperative view
-control and the French Géoportail are complete and tested. Still open: arbitrary
-HTML markers, drawing interactions, a keyboard and ARIA pass, real
+Markers, GeoJSON shapes, emoji, popups, clustering, heatmaps, drawing and
+editing geometry, keyboard access, imperative view control and the French
+Géoportail are complete and tested. Still open: arbitrary HTML markers, real
 `ol/source/WMTS` sources, and loading geometry by URL rather than by attribute.
 
 That last one is the honest limit of the current transport. An HTML attribute is a
@@ -521,6 +631,7 @@ Most of the migration is deleting JavaScript. The mapping:
 | `bindTooltip` / `title` | a marker's `:tooltip` |
 | `L.geoJSON(geometry, style)` | `shapes` with `:color`, `:width`, `:fill_opacity` |
 | `featureGroup().getBounds()` + `fitBounds` | automatic, over markers and shapes together |
+| `L.Draw` / `leaflet-draw` | `Rover.start_drawing/3` and `on_draw_end` |
 | `handleEvent` + `push_event` to feed the map | `assign/3`; the data rides on attributes |
 | a versioned element `id` to force a remount | not needed — Rover has an `updated()` |
 

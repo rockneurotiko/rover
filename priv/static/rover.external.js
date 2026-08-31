@@ -54,17 +54,27 @@ var Popups = class {
   open(kind, id, coordinate) {
     const key = `${kind}:${id}`;
     const node = this.nodeFor(key);
+    const opener = keyboardOpener(document.activeElement);
     this.close();
     if (!node) return;
     this.current = { kind, id: String(id), key, coordinate };
     node.hidden = false;
     this.position();
+    if (opener && this.current) {
+      this.returnFocusTo = opener;
+      focusInto(node);
+    }
   }
   close() {
     if (!this.current) return;
     const node = this.nodeFor(this.current.key);
+    const held = Boolean(node && node.contains(document.activeElement));
     if (node) node.hidden = true;
     this.current = null;
+    if (held && this.returnFocusTo && this.returnFocusTo.isConnected) {
+      this.returnFocusTo.focus();
+    }
+    this.returnFocusTo = null;
   }
   /**
    * Where the open popup should point, in map coordinates.
@@ -121,6 +131,16 @@ var Popups = class {
     this.roverMap.map.un("postrender", this.onPostrender);
   }
 };
+function keyboardOpener(active) {
+  if (!active || !active.closest) return null;
+  return active.closest("[data-rover-focus]");
+}
+function focusInto(node) {
+  const focusable = node.querySelector(
+    "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+  );
+  (focusable || node).focus();
+}
 function cssEscape(value) {
   return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/"/g, '\\"');
 }
@@ -11397,19 +11417,63 @@ import Rotate from "ol/control/Rotate.js";
 import ScaleLine from "ol/control/ScaleLine.js";
 import Zoom from "ol/control/Zoom.js";
 import { never } from "ol/events/condition.js";
+import Draw from "ol/interaction/Draw.js";
 import Modify from "ol/interaction/Modify.js";
+import Snap from "ol/interaction/Snap.js";
 import Translate from "ol/interaction/Translate.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import { createEmpty, extend } from "ol/extent.js";
+
+// js/draw.js
+import VectorLayer2 from "ol/layer/Vector.js";
+import VectorSource2 from "ol/source/Vector.js";
+import Circle2 from "ol/style/Circle.js";
+import Fill2 from "ol/style/Fill.js";
+import Stroke2 from "ol/style/Stroke.js";
+import Style2 from "ol/style/Style.js";
+var PENDING_COLOR = "#2563eb";
+var TYPES = /* @__PURE__ */ new Set(["Point", "LineString", "Polygon"]);
+function drawTypeFor(type) {
+  return TYPES.has(type) ? type : null;
+}
+var DrawLayer = class {
+  constructor() {
+    this.source = new VectorSource2({ wrapX: false });
+    this.layer = new VectorLayer2({
+      source: this.source,
+      // Above the shapes it is about to become one of, below the markers.
+      zIndex: 6,
+      style: pendingStyle()
+    });
+  }
+  clear() {
+    this.source.clear();
+  }
+  dispose() {
+    this.source.clear();
+  }
+};
+function pendingStyle() {
+  return new Style2({
+    stroke: new Stroke2({ color: PENDING_COLOR, width: 2, lineDash: [6, 5] }),
+    fill: new Fill2({ color: [37, 99, 235, 0.08] }),
+    // A drawn Point has no stroke or fill to show.
+    image: new Circle2({
+      radius: 5,
+      fill: new Fill2({ color: PENDING_COLOR }),
+      stroke: new Stroke2({ color: "rgba(255, 255, 255, 0.9)", width: 2 })
+    })
+  });
+}
 
 // js/heatmap.js
 import Feature from "ol/Feature.js";
 import Point from "ol/geom/Point.js";
 import HeatmapLayerOl from "ol/layer/Heatmap.js";
-import VectorSource2 from "ol/source/Vector.js";
+import VectorSource3 from "ol/source/Vector.js";
 var HeatmapLayer = class {
   constructor() {
-    this.source = new VectorSource2({ wrapX: false });
+    this.source = new VectorSource3({ wrapX: false });
     this.layer = new HeatmapLayerOl({
       source: this.source,
       // Under the shapes and the markers: a heat field is background, and covering
@@ -11462,17 +11526,17 @@ var HeatmapLayer = class {
 // js/markers.js
 import Feature2 from "ol/Feature.js";
 import Point2 from "ol/geom/Point.js";
-import VectorLayer2 from "ol/layer/Vector.js";
+import VectorLayer3 from "ol/layer/Vector.js";
 import Cluster from "ol/source/Cluster.js";
-import VectorSource3 from "ol/source/Vector.js";
+import VectorSource4 from "ol/source/Vector.js";
 
 // js/styles.js
-import Style2 from "ol/style/Style.js";
-import Circle2 from "ol/style/Circle.js";
+import Style3 from "ol/style/Style.js";
+import Circle3 from "ol/style/Circle.js";
 import Icon2 from "ol/style/Icon.js";
 import Text2 from "ol/style/Text.js";
-import Fill2 from "ol/style/Fill.js";
-import Stroke2 from "ol/style/Stroke.js";
+import Fill3 from "ol/style/Fill.js";
+import Stroke3 from "ol/style/Stroke.js";
 var DEFAULT_COLOR = "#e11d48";
 var cache = /* @__PURE__ */ new Map();
 var CACHE_LIMIT = 512;
@@ -11494,11 +11558,11 @@ function styleFor(marker) {
 }
 function buildStyle(marker) {
   const scale = marker.scale || 1;
-  const styles = marker.emoji ? [new Style2({ text: emojiText(marker.emoji, scale) })] : [new Style2({ image: pinImage(marker, scale) })];
+  const styles = marker.emoji ? [new Style3({ text: emojiText(marker.emoji, scale) })] : [new Style3({ image: pinImage(marker, scale) })];
   if (marker.label) {
     const label = labelText(marker.label);
     if (marker.emoji) {
-      styles.push(new Style2({ text: label }));
+      styles.push(new Style3({ text: label }));
     } else {
       styles[0].setText(label);
     }
@@ -11523,10 +11587,10 @@ function labelText(text) {
     font: "500 12px ui-sans-serif, system-ui, -apple-system, sans-serif",
     offsetY: 8,
     textBaseline: "top",
-    fill: new Fill2({ color: "#111827" }),
+    fill: new Fill3({ color: "#111827" }),
     // A halo rather than a background box: legible over any tile, without
     // drawing a rectangle over the map.
-    stroke: new Stroke2({ color: "rgba(255, 255, 255, 0.92)", width: 3 }),
+    stroke: new Stroke3({ color: "rgba(255, 255, 255, 0.92)", width: 3 }),
     overflow: true
   });
 }
@@ -11543,16 +11607,16 @@ function clusterStyle(count) {
   let style = clusterCache.get(count);
   if (!style) {
     const radius = Math.min(28, 12 + Math.log2(count) * 3);
-    style = new Style2({
-      image: new Circle2({
+    style = new Style3({
+      image: new Circle3({
         radius,
-        fill: new Fill2({ color: withAlpha(CLUSTER_COLOR, 0.85) }),
-        stroke: new Stroke2({ color: "rgba(255, 255, 255, 0.9)", width: 2 })
+        fill: new Fill3({ color: withAlpha(CLUSTER_COLOR, 0.85) }),
+        stroke: new Stroke3({ color: "rgba(255, 255, 255, 0.9)", width: 2 })
       }),
       text: new Text2({
         text: String(count),
         font: "600 12px ui-sans-serif, system-ui, -apple-system, sans-serif",
-        fill: new Fill2({ color: "#ffffff" })
+        fill: new Fill3({ color: "#ffffff" })
       })
     });
     if (clusterCache.size >= CACHE_LIMIT) clusterCache.delete(clusterCache.keys().next().value);
@@ -11574,8 +11638,8 @@ function withAlpha(hex, alpha) {
 var ROVER_KEY = "rover";
 var MarkerLayer = class {
   constructor() {
-    this.source = new VectorSource3({ wrapX: false });
-    this.layer = new VectorLayer2({
+    this.source = new VectorSource4({ wrapX: false });
+    this.layer = new VectorLayer3({
       source: this.source,
       // Markers are the thing the user came for: keep them above every other
       // layer regardless of the order layers happen to be added in.
@@ -11770,11 +11834,11 @@ function appearanceOf(marker) {
 
 // js/shapes.js
 import GeoJSON2 from "ol/format/GeoJSON.js";
-import VectorLayer3 from "ol/layer/Vector.js";
-import VectorSource4 from "ol/source/Vector.js";
-import Fill3 from "ol/style/Fill.js";
-import Stroke3 from "ol/style/Stroke.js";
-import Style3 from "ol/style/Style.js";
+import VectorLayer4 from "ol/layer/Vector.js";
+import VectorSource5 from "ol/source/Vector.js";
+import Fill4 from "ol/style/Fill.js";
+import Stroke4 from "ol/style/Stroke.js";
+import Style4 from "ol/style/Style.js";
 import Text3 from "ol/style/Text.js";
 var SHAPE_KEY = "roverShape";
 var DEFAULT_COLOR2 = "#2563eb";
@@ -11788,8 +11852,8 @@ var format = new GeoJSON2({
 });
 var ShapeLayer = class {
   constructor() {
-    this.source = new VectorSource4({ wrapX: false });
-    this.layer = new VectorLayer3({
+    this.source = new VectorSource5({ wrapX: false });
+    this.layer = new VectorLayer4({
       source: this.source,
       // Above the tiles, below the markers: an outline should never swallow the
       // pin that sits on it.
@@ -11928,17 +11992,17 @@ function styleForShape(shape) {
 function buildStyle2(shape) {
   const color = shape.color || DEFAULT_COLOR2;
   const opacity = shape.fill_opacity ?? DEFAULT_FILL_OPACITY;
-  const style = new Style3({
-    stroke: new Stroke3({ color, width: shape.width || DEFAULT_WIDTH }),
-    fill: new Fill3({ color: withOpacity(shape.fill_color || color, opacity) })
+  const style = new Style4({
+    stroke: new Stroke4({ color, width: shape.width || DEFAULT_WIDTH }),
+    fill: new Fill4({ color: withOpacity(shape.fill_color || color, opacity) })
   });
   if (shape.label) {
     style.setText(
       new Text3({
         text: shape.label,
         font: "500 12px ui-sans-serif, system-ui, -apple-system, sans-serif",
-        fill: new Fill3({ color: "#111827" }),
-        stroke: new Stroke3({ color: "rgba(255, 255, 255, 0.92)", width: 3 }),
+        fill: new Fill4({ color: "#111827" }),
+        stroke: new Stroke4({ color: "rgba(255, 255, 255, 0.92)", width: 3 }),
         overflow: true
       })
     );
@@ -11981,16 +12045,25 @@ var RoverMap = class {
     this.hasFitted = false;
     this.quietUntil = 0;
     this.listeners = {};
+    this.drawing = null;
     this.markerLayer = new MarkerLayer();
     this.shapeLayer = new ShapeLayer();
+    this.drawLayer = new DrawLayer();
     this.heatmapLayer = new HeatmapLayer();
     this.basemapLayer = new TileLayer2({ zIndex: 0, visible: false });
     this.map = new Map4({
       target: element,
+      // OpenLayers listens for keys on this element, and by default that is the
+      // viewport it builds *inside* the target. Nothing ever focuses that, so
+      // KeyboardPan and KeyboardZoom — both already in defaultInteractions() —
+      // were present and unreachable. The target is the element the component
+      // gives a tabindex, so a keydown on the focused map now reaches them.
+      keyboardEventTarget: element,
       layers: [
         this.basemapLayer,
         this.heatmapLayer.layer,
         this.shapeLayer.layer,
+        this.drawLayer.layer,
         this.markerLayer.layer
       ],
       controls: buildControls(this.config),
@@ -12005,6 +12078,7 @@ var RoverMap = class {
     });
     this.applyTiles(this.config.tiles);
     this.markerLayer.setClustering(this.config.cluster);
+    this.applyAccessibility(this.config);
     this.setupTooltip();
     this.setupEditing();
     this.setupDragging();
@@ -12017,7 +12091,7 @@ var RoverMap = class {
     this.maybeFit();
   }
   setShapes(shapes) {
-    this.shapeLayer.reconcile(shapes);
+    this.acceptShapes(shapes);
     this.maybeFit();
   }
   setHeatmap(heatmap) {
@@ -12035,9 +12109,28 @@ var RoverMap = class {
    */
   setContent({ markers, shapes, heatmap }) {
     if (heatmap !== void 0) this.heatmapLayer.reconcile(heatmap);
-    if (shapes !== void 0) this.shapeLayer.reconcile(shapes);
+    if (shapes !== void 0) this.acceptShapes(shapes);
     if (markers !== void 0) this.markerLayer.reconcile(markers);
     this.maybeFit();
+  }
+  /**
+   * Take a shape list from the server, and drop whatever was sketched.
+   *
+   * The two happen in one synchronous call, so when this is the update carrying
+   * the drawn shape the swap from pending sketch to real tracked shape is
+   * invisible — there is no frame in which the map shows both or neither.
+   *
+   * The clear is unconditional, which is the trade: any `:shapes` update drops a
+   * finished sketch, including one that arrived from somewhere else — a PubSub
+   * broadcast landing between `drawEnd` and the server's echo blanks the polygon
+   * until the round trip completes. Recognising *which* update carries the drawn
+   * shape would need an identity the client does not have, since assigning one is
+   * the whole thing the server does with a `drawEnd`. An unconditional clear is
+   * also what cleans up after a sketch the server refused.
+   */
+  acceptShapes(shapes) {
+    this.drawLayer.clear();
+    this.shapeLayer.reconcile(shapes);
   }
   setConfig(config) {
     const previous = this.config;
@@ -12049,6 +12142,9 @@ var RoverMap = class {
       this.applyControls(next);
     }
     if (previous.interactive !== next.interactive) this.applyInteractions(next);
+    if (previous.interactive !== next.interactive || previous.label !== next.label) {
+      this.applyAccessibility(next);
+    }
     if (changed(previous.cluster, next.cluster)) this.markerLayer.setClustering(next.cluster);
     const view = this.map.getView();
     if (previous.minZoom !== next.minZoom) view.setMinZoom(next.minZoom ?? 0);
@@ -12157,6 +12253,87 @@ var RoverMap = class {
     this.setupEditing();
     this.translate = null;
     this.setupDragging();
+    const type = this.drawing && this.drawing.type;
+    this.stopDrawing();
+    if (type && config.interactive !== false) this.armDrawing(type);
+  }
+  // -- drawing --------------------------------------------------------------
+  /**
+   * Arm the map for drawing, from `Rover.start_drawing/3`.
+   *
+   * A locked map refuses: `interactive={false}` withholds every other pointer
+   * gesture, and a drawing mode is the largest of them.
+   */
+  startDrawing({ type }) {
+    if (this.config.interactive === false) return;
+    const geometryType = drawTypeFor(type);
+    if (!geometryType) {
+      console.error(`[rover] cannot draw ${JSON.stringify(type)} \u2014 expected Point, LineString or Polygon`);
+      return;
+    }
+    this.stopDrawing();
+    this.armDrawing(geometryType);
+  }
+  armDrawing(type) {
+    this.drawing = { type };
+    if (!this.wants("drawEnd")) {
+      console.error("[rover] drawing was armed with no on_draw_end handler \u2014 the shape drawn will go nowhere");
+    }
+    this.draw = new Draw({ source: this.drawLayer.source, type });
+    this.draw.on("drawend", (event) => {
+      const geometry = format.writeGeometryObject(event.feature.getGeometry(), {
+        decimals: 7
+      });
+      this.emit("drawEnd", { type: geometry.type, geometry });
+    });
+    this.map.addInteraction(this.draw);
+    this.snap = new Snap({ source: this.shapeLayer.source, pixelTolerance: HIT_TOLERANCE });
+    this.map.addInteraction(this.snap);
+    this.onDrawKeydown = (event) => {
+      if (event.key !== "Escape" || !this.draw) return;
+      if (isTextEntry(event.target)) return;
+      this.draw.abortDrawing();
+    };
+    document.addEventListener("keydown", this.onDrawKeydown);
+    this.element.classList.add("rover-map__canvas--drawing");
+  }
+  /** Disarm, from `Rover.stop_drawing/2` — and discard the sketch with the mode. */
+  stopDrawing() {
+    if (this.draw) {
+      this.map.removeInteraction(this.draw);
+      this.draw.dispose();
+      this.draw = null;
+    }
+    if (this.snap) {
+      this.map.removeInteraction(this.snap);
+      this.snap.dispose();
+      this.snap = null;
+    }
+    if (this.onDrawKeydown) {
+      document.removeEventListener("keydown", this.onDrawKeydown);
+      this.onDrawKeydown = null;
+    }
+    this.drawLayer.clear();
+    this.drawing = null;
+    this.element.classList.remove("rover-map__canvas--drawing");
+  }
+  /**
+   * The map element's accessible name, and whether it is in the tab order.
+   *
+   * Applied from here rather than left to the server's markup, because the
+   * element is `phx-update="ignore"` — and LiveView merges only `data-*`
+   * attributes onto an ignored element (`mergeAttrs`, `isIgnored`). The server's
+   * rendering is the first paint; every change after it has to come through the
+   * config, or a map that locks itself stays a focusable `role="application"`
+   * nobody can do anything with.
+   */
+  applyAccessibility(config) {
+    if (config.label) this.element.setAttribute("aria-label", config.label);
+    if (config.interactive === false) {
+      this.element.removeAttribute("tabindex");
+    } else {
+      this.element.setAttribute("tabindex", "0");
+    }
   }
   // -- interaction ----------------------------------------------------------
   setupTooltip() {
@@ -12237,6 +12414,7 @@ var RoverMap = class {
   setupEvents() {
     this.map.on("pointermove", (event) => {
       if (this.config.interactive === false) return;
+      if (this.drawing) return this.hideTooltip();
       if (event.dragging) return this.hideTooltip();
       const { marker, cluster, markerFeature, shape } = this.featureAt(event.pixel);
       const clickableShape = shape && this.wants("shapeClick");
@@ -12254,6 +12432,7 @@ var RoverMap = class {
     this.map.getViewport().addEventListener("pointerleave", () => this.hideTooltip());
     this.map.on("singleclick", (event) => {
       if (this.config.interactive === false) return;
+      if (this.drawing) return;
       const { marker, cluster, markerFeature, shape } = this.featureAt(event.pixel);
       const { lat, lon } = unproject(event.coordinate);
       if (cluster) {
@@ -12337,6 +12516,38 @@ var RoverMap = class {
       duration: ANIMATION_MS
     });
   }
+  /**
+   * Do to a feature what a click on it would do, named rather than pointed at.
+   *
+   * The keyboard's way in. `<.map>` renders one hidden button per marker and
+   * shape, carrying `marker:<id>` or `shape:<id>`; pressing one lands here, and
+   * from here on it is the same path as a pointer click — the same payload to the
+   * server, the same popup opened by the same subscriber.
+   */
+  activate(key) {
+    if (this.config.interactive === false) return;
+    const target = parseFocusKey(key);
+    if (!target) return;
+    if (target.kind === "marker") {
+      const marker = this.markerLayer.markerById(target.id);
+      if (!marker) return;
+      this.emit("markerClick", {
+        id: marker.id,
+        lat: marker.lat,
+        lon: marker.lon,
+        data: marker.data ?? null
+      });
+      return;
+    }
+    const entry = this.shapeLayer.entries.get(target.id);
+    if (!entry || !this.wants("shapeClick")) return;
+    if (entry.features.length === 0) return;
+    const extent = createEmpty();
+    entry.features.forEach((feature) => extend(extent, feature.getGeometry().getExtent()));
+    const [minX, minY, maxX, maxY] = extent;
+    const { lat, lon } = unproject([(minX + maxX) / 2, (minY + maxY) / 2]);
+    this.emit("shapeClick", { id: entry.shape.id, lat, lon, data: entry.shape.data ?? null });
+  }
   featureAt(pixel) {
     let marker = null;
     let shape = null;
@@ -12384,7 +12595,9 @@ var RoverMap = class {
   }
   destroy() {
     if (this.resizeObserver) this.resizeObserver.disconnect();
+    this.stopDrawing();
     this.markerLayer.dispose();
+    this.drawLayer.dispose();
     this.shapeLayer.dispose();
     this.heatmapLayer.dispose();
     this.map.setTarget(void 0);
@@ -12452,6 +12665,19 @@ function fitMaxZoom(config, hasShapes) {
   const tileMax = config.tiles && config.tiles.maxZoom || 19;
   return hasShapes ? tileMax : Math.min(tileMax, 16);
 }
+function isTextEntry(target) {
+  if (!target || !target.tagName) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+function parseFocusKey(key) {
+  if (typeof key !== "string") return null;
+  const at = key.indexOf(":");
+  if (at < 1) return null;
+  const kind = key.slice(0, at);
+  const id = key.slice(at + 1);
+  if (kind !== "marker" && kind !== "shape" || id === "") return null;
+  return { kind, id };
+}
 function sameCenter(a, b) {
   return Boolean(a) && Boolean(b) && a[0] === b[0] && a[1] === b[1];
 }
@@ -12486,12 +12712,23 @@ var Rover = {
       markers: parse(this.markersJson, [], "data-rover-markers")
     });
     this.popups = new Popups(this.el, this.map);
+    this.onIndexClick = (event) => {
+      const button = event.target.closest && event.target.closest("[data-rover-focus]");
+      if (button && this.map) this.map.activate(button.dataset.roverFocus);
+    };
+    this.el.addEventListener("click", this.onIndexClick);
     this.el._rover = this.map;
     this.handleEvent("rover:fly_to", (payload) => {
       if (this.mine(payload)) this.map.flyTo(payload);
     });
     this.handleEvent("rover:fit_to", (payload) => {
       if (this.mine(payload)) this.map.fitTo(payload);
+    });
+    this.handleEvent("rover:start_drawing", (payload) => {
+      if (this.mine(payload)) this.map.startDrawing(payload);
+    });
+    this.handleEvent("rover:stop_drawing", (payload) => {
+      if (this.mine(payload)) this.map.stopDrawing();
     });
   },
   mine(payload) {
@@ -12527,6 +12764,7 @@ var Rover = {
     if (this.popups) this.popups.refresh();
   },
   destroyed() {
+    this.el.removeEventListener("click", this.onIndexClick);
     if (this.popups) this.popups.destroy();
     if (this.map) this.map.destroy();
     this.popups = null;
@@ -12556,6 +12794,7 @@ function parse(json, fallback, attribute) {
 // js/index.js
 var index_default = RoverHooks;
 export {
+  DrawLayer,
   HeatmapLayer,
   MarkerLayer,
   Rover,

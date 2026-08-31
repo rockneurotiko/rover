@@ -3,7 +3,9 @@ import { describe, it } from "node:test"
 
 import {
   fitMaxZoom,
+  isTextEntry,
   normalizeConfig,
+  parseFocusKey,
   shouldFit,
   shouldRecenter,
   wantsEvent,
@@ -186,5 +188,44 @@ describe("fitMaxZoom as the drill-in ceiling", () => {
 
   it("still respects a lower basemap", () => {
     assert.equal(fitMaxZoom({ tiles: { maxZoom: 17 } }, true), 17)
+  })
+})
+
+// The Escape that abandons a sketch is bound to the document, the way a drawing
+// tool binds it. The one press that is plainly not the map's is the one
+// dismissing whatever the user is typing into.
+describe("isTextEntry", () => {
+  it("leaves Escape to a field the user is typing in", () => {
+    assert.equal(isTextEntry({ tagName: "INPUT" }), true)
+    assert.equal(isTextEntry({ tagName: "TEXTAREA" }), true)
+    assert.equal(isTextEntry({ tagName: "SELECT" }), true)
+    assert.equal(isTextEntry({ tagName: "DIV", isContentEditable: true }), true)
+  })
+
+  it("takes Escape for the map everywhere else", () => {
+    assert.equal(isTextEntry({ tagName: "DIV" }), false)
+    assert.equal(isTextEntry({ tagName: "BODY" }), false)
+    assert.equal(isTextEntry(null), false)
+  })
+})
+
+describe("parseFocusKey", () => {
+  it("names the layer and the feature a keyboard press is aimed at", () => {
+    assert.deepEqual(parseFocusKey("marker:1"), { kind: "marker", id: "1" })
+    assert.deepEqual(parseFocusKey("shape:parcel"), { kind: "shape", id: "parcel" })
+  })
+
+  it("splits on the first colon only, because ids are application data", () => {
+    // A slug or a URN with a colon in it would otherwise be truncated into a
+    // different feature's id, or into one that does not exist at all.
+    assert.deepEqual(parseFocusKey("marker:urn:lot:14"), { kind: "marker", id: "urn:lot:14" })
+  })
+
+  it("refuses anything that is not one of the two layers", () => {
+    assert.equal(parseFocusKey("heatmap:1"), null)
+    assert.equal(parseFocusKey("marker:"), null)
+    assert.equal(parseFocusKey(":1"), null)
+    assert.equal(parseFocusKey("marker"), null)
+    assert.equal(parseFocusKey(null), null)
   })
 })
