@@ -19,9 +19,19 @@ defmodule Rover.Tiles do
 
   ## Carto API keys
 
-  Carto now requires an API key on `:carto_light`, `:carto_dark`, and
-  `:carto_voyager`, requests without one are rejected. Configure a default for
-  the whole app:
+  Carto's basemaps now need an API key. Without one the tiles still load — they
+  arrive with `API KEY REQUIRED` stamped diagonally across every one, so the
+  symptom is a legible map wearing a watermark rather than a blank map or an
+  error in the console. That is worth knowing before you go looking for a 401
+  that never comes.
+
+  The key is free: Carto issue it by return email, with no approval queue and no
+  Carto account, and it covers 5 million tile requests a month across their
+  raster and vector services. Their terms require the CARTO and OpenStreetMap
+  attribution to stay visible, which Rover renders for you. Request one at
+  <https://carto.com/basemaps/apikey/>.
+
+  Configure a default for the whole app:
 
       config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
 
