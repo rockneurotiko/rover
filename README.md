@@ -469,7 +469,13 @@ that forbid production traffic** — for anything real, point `{:xyz, …}` (or,
 for a vector style, `{:vector, …}`) at tiles you are entitled to use.
 
 Carto now requires an API key on all six of its presets, raster and vector
-alike:
+alike. Without one the tiles still load — they are served with
+`API KEY REQUIRED` stamped diagonally across every one, so the symptom is a
+legible map wearing a watermark rather than a blank map or an error in the
+console. The key is free, issued by return email with no queue and no Carto
+account, and covers 5 million tile requests a month across their raster and
+vector services. Attribution must stay visible, which Rover renders for you.
+Request one at <https://carto.com/basemaps/apikey/>, then:
 
 ```elixir
 # config.exs — applies to every carto_* preset
@@ -482,29 +488,9 @@ config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
 <.map id="m" tiles={{:carto_dark_vector, key: "YOUR_KEY"}} ... />
 ```
 
-**Carto's basemaps now need an API key.** Without one the tiles still load —
-they are served with `API KEY REQUIRED` stamped diagonally across every one, so
-the symptom is a legible map wearing a watermark rather than a blank map or an
-error in the console. The key is free, issued by return email with no queue and
-no Carto account, and covers 5 million tile requests a month across their raster
-and vector services. Attribution must stay visible, which Rover renders for you.
-Request one at <https://carto.com/basemaps/apikey/>, then:
-
-```elixir
-# config.exs — applies to every carto_* preset
-config :rover, Rover.Tiles, carto_api_key: "YOUR_KEY"
-```
-
-```heex
-<%!-- or per call, which overrides the configured default --%>
-<.map id="m" tiles={{:carto_dark, key: "YOUR_KEY"}} ... />
-```
-
 Carto also says the raster (PNG) service is being retired in favour of vector
 tiles, and that they are considering freezing its data updates. No date is
-published. Rover's OpenLayers basemap layer is raster-only today, so treat the
-Carto presets as a transitional option rather than a long-term one — the key you
-request now covers the vector service too, whenever Rover reaches it.
+published — prefer a `carto_*_vector` preset for anything new.
 
 ## What "only update what changed" actually means
 

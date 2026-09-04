@@ -59989,6 +59989,7 @@ var RoverMap = class {
     next.setZIndex(0);
     const layers = this.map.getLayers();
     layers.remove(this.basemapLayer);
+    this.basemapLayer.dispose();
     layers.insertAt(0, next);
     this.basemapLayer = next;
     if (tiles && tiles.type === "vector") {

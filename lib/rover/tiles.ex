@@ -180,6 +180,12 @@ defmodule Rover.Tiles do
     :ign_ortho
   ]
 
+  @vector_presets [
+    :carto_light_vector,
+    :carto_dark_vector,
+    :carto_voyager_vector
+  ]
+
   @carto_presets [
     :carto_light,
     :carto_dark,
@@ -287,7 +293,7 @@ defmodule Rover.Tiles do
 
   defp tag_type(tiles, name) when name in @raster_presets, do: Map.put(tiles, :type, :raster)
 
-  defp tag_type(tiles, _name) do
+  defp tag_type(tiles, name) when name in @vector_presets do
     tiles |> Map.put_new(:max_zoom, @vector_max_zoom) |> Map.put(:type, :vector)
   end
 
